@@ -63,12 +63,6 @@ USE_STREAM_OPUS ?= 0        # 1 = offer Opus as an RTSP/RTP streaming audio code
                             #     USE_PLAY_OPUS (local .opus playback). Default off = no opus stream
                             #     code compiled in and "opus" is not an accepted audio.codec value.
 OPUS_ENC_LIB  ?= -lopus     # link flag for the libopus encoder (USE_STREAM_OPUS)
-USE_ROTATE    ?= 0          # 1 = image rotation feature (real 90/270 transpose: I2D on
-                            #     T40/T41, libimp FrameSource on T31, and with USE_OPENIMP
-                            #     T10/T20/T21/T23/T30 through OpenIMP SetChnRotate). 180 is NOT a rotation
-                            #     value (use image.hflip+image.vflip). Default off = no
-                            #     ROT_HAS_* macros defined, so all rotation code compiles
-                            #     out (byte-identical build).
 # The implications below use `override`: a plain := is ignored for a variable
 # given on the make command line, which is how thingino passes every USE_*.
 USE_OSD_HINTING ?= 0        # 1 = compile in the opt-in geometric OSD-text autohinter
@@ -313,7 +307,6 @@ target:
 	  $(if $(filter 1,$(USE_PLAY)),-DUSE_PLAY) \
 	  $(if $(filter 1,$(USE_PLAY_OPUS)),-DUSE_PLAY_OPUS $(if $(OPUS_INC),-I$(OPUS_INC) -I$(OPUS_INC)/opus)) \
 	  $(if $(filter 1,$(USE_STREAM_OPUS)),-DUSE_STREAM_OPUS $(if $(OPUS_INC),-I$(OPUS_INC))) \
-	  $(if $(filter 1,$(USE_ROTATE)),-DUSE_ROTATE) \
 	  $(if $(filter 1,$(USE_OSD_HINTING)),-DUSE_OSD_HINTING) \
 	  $(if $(filter 1,$(USE_TRACE)),-DUSE_TRACE) \
 	  -DHAL_INGENIC -DPLATFORM_$(PLATFORM) $(PLATFORM_CFLAGS) -DMS_VERSION='"$(VERSION)"' -Isrc -I$(IMP_INC) -I$(IMP_INC)/imp \
@@ -324,19 +317,18 @@ target:
 	  $(if $(filter 1,$(USE_PLAY_OPUS)),$(OPUSLIB)) \
 	  $(if $(filter 1,$(USE_STREAM_OPUS)),$(OPUS_ENC_LIB)) $(LIBS) -o $(BIN)
 	@rm -f $(TARGET_OBJS)
-	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_OPENIMP=$(USE_OPENIMP) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_BC_WS=$(USE_BC_WS) USE_WEBRTC=$(USE_WEBRTC) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_STREAM_OPUS=$(USE_STREAM_OPUS) USE_ROTATE=$(USE_ROTATE) USE_OSD_HINTING=$(USE_OSD_HINTING) USE_TRACE=$(USE_TRACE) USE_LTO=$(USE_LTO))"
+	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_OPENIMP=$(USE_OPENIMP) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_BC_WS=$(USE_BC_WS) USE_WEBRTC=$(USE_WEBRTC) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_STREAM_OPUS=$(USE_STREAM_OPUS) USE_OSD_HINTING=$(USE_OSD_HINTING) USE_TRACE=$(USE_TRACE) USE_LTO=$(USE_LTO))"
 
 sim:
 	$(HOSTCC) $(CFLAGS) $(LTO_FLAGS) -DMS_VERSION='"$(VERSION)"' $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \
 	  $(if $(filter 1,$(USE_DAYNIGHT)),-DUSE_DAYNIGHT) \
 	  $(if $(filter 1,$(USE_RECORD)),-DUSE_RECORD) \
 	  $(if $(filter 1,$(USE_TIMELAPSE)),-DUSE_TIMELAPSE) \
-	  $(if $(filter 1,$(USE_ROTATE)),-DUSE_ROTATE) \
 	  $(if $(filter 1,$(USE_TRACE)),-DUSE_TRACE) \
 	  $(if $(filter 1,$(USE_SRT)),-DUSE_SRT) \
 	  $(SIM_CFLAGS) \
 	  -Isrc $(SIM_SRC) $(LDFLAGS) $(if $(filter 1,$(USE_SRT)),-lsrt) -lpthread -lm -o $(BIN)-sim
-	@echo "built $(BIN)-sim (host simulation backend, USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_ROTATE=$(USE_ROTATE) USE_TRACE=$(USE_TRACE) USE_SRT=$(USE_SRT) USE_LTO=$(USE_LTO))"
+	@echo "built $(BIN)-sim (host simulation backend, USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_TRACE=$(USE_TRACE) USE_SRT=$(USE_SRT) USE_LTO=$(USE_LTO))"
 
 # Self-contained authentication fail-closed test: build the host sim (with
 # /control), start it on unprivileged ports, run scripts/test_auth.sh against
@@ -381,7 +373,7 @@ test-http-sim:
 	$(MAKE) sim USE_CONTROL=1
 	$(MAKE) sim USE_CONTROL=1 BIN=$(BIN)-hang \
 	  SIM_CFLAGS='-DCTL_LOCK_S=2 -DCTL_HANG_S=4 -DMS_STARTUP_REBOOT_MARKER=\"/nonexistent/timps-test.flag\"'
-	$(MAKE) sim USE_CONTROL=1 USE_ROTATE=1 BIN=$(BIN)-rot SIM_CFLAGS='-DSIM_ROT_ENV=FS_ROT_ENV_T1X'
+	$(MAKE) sim USE_CONTROL=1 BIN=$(BIN)-rot SIM_CFLAGS='-DSIM_ROT_ENV=FS_ROT_ENV_T1X'
 	@scripts/test_http_sim.sh ./$(BIN)-sim ./$(BIN)-hang-sim ./$(BIN)-rot-sim; rc=$$?; \
 	 rm -f $(BIN)-hang-sim $(BIN)-rot-sim; exit $$rc
 

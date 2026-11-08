@@ -157,10 +157,12 @@ variable. **If a feature is compiled out, no config key can turn it on.**
 | `BR2_PACKAGE_TIMPS_BC_WS` | `USE_BC_WS` | **y on TLS builds**, else n | Browser-microphone WebSocket at `/talk` (~8 KB). Depends on BACKCHANNEL + CONTROL. |
 | `BR2_PACKAGE_TIMPS_PLAY` | `USE_PLAY` | n | System-sound play queue + `/usr/sbin/play` (FIFO at `/run/timps/audio_out`). WAV/PCM16/G.711. |
 | `BR2_PACKAGE_TIMPS_PLAY_OPUS` | `USE_PLAY_OPUS` | n | Ogg-Opus decode in the play queue (opusfile). Needed for thingino's stock `.opus` sounds. |
-| `BR2_PACKAGE_TIMPS_ROTATE` | `USE_ROTATE` | n | `videoN.rotation`. Off → rotation values are coerced to 0 with a warning, and `caps.rotation` is absent. |
 | `BR2_PACKAGE_TIMPS_OSD_HINTING` | `USE_OSD_HINTING` | n | Compiles the OSD geometric autohinting pass (~2 KB). |
 | `BR2_PACKAGE_TIMPS_DIAG_TOOLS` | — | n | Installs `timps-selftest`, `timps-logcat-ship`, `timps-dn-isp-log`. |
 | `BR2_PACKAGE_TIMPS_DROP_LIBSTDCPP` | — | n | Target-finalize hook that removes `libstdc++.so.6` when nothing links it (flash saving on small rootfs). |
+
+Up to v1.12.0 there was also `BR2_PACKAGE_TIMPS_ROTATE` (`USE_ROTATE`, default
+n) for `videoN.rotation`; since the next release rotation is always built.
 
 There is also an **"Audio backchannel preset"** choice bundling the
 interdependent audio knobs:
@@ -305,7 +307,7 @@ videoN.min_qp    = 20
 videoN.max_qp    = 45
 videoN.quality_lvl / change_pos / i_bias_lvl / fluc_lvl   # classic SoCs only
 videoN.mbrc      = 0               # T20 only, restart: macroblock QP control (CPU-heavy)
-videoN.rotation  = 0               # needs USE_ROTATE
+videoN.rotation  = 0               # 0|90|270 (+180 T40/T41), per-SoC, restart
 videoN.buffers   = 2
 videoN.rtsp_path = /ch0 | /ch1
 videoN.imp_chn   = 0 | 1
@@ -626,8 +628,8 @@ cap — see the POST limits below.)
 | `motion` | `active[]`, `last_ms`, `max_cells`, plus the echoed grid config | **`active[]` is row-major**: index = `row * cols + col`, length `cols * rows`. **`last_ms = -1` means "never"**, not "just now". `max_cells` is the SDK budget, the same number as `caps.motion.max_cells`. With OpenIMP motion v2 (a `USE_OPENIMP` build whose libimp exports `OpenIMP_IVS_MoveGetResultEx`) three more keys appear while its analysis runs: `v2`:1, `suppress` (hold-off reasons: 1 day/night, 2 gain jump, 4 brightness jump, 0 none) and `objects` = `[{id,x0,y0,x1,y1,strength,age}]` in pixels of the monitored stream (strength 0..1000). |
 | `daynight` | `mode` (**int** 0 = day / 1 = night) *and* `dn_mode` (**string**), `brightness` (%), `total_gain`, `exposure`, `ae_luma`, `night_baseline`, `day_trigger`, `sun_computed_sunrise`, `sun_computed_sunset`, … | `total_gain` is the IMP `[24.8]` linear scale (**256 = 1.0×**). **`exposure` is the value the decision actually runs on** — `total_gain` scaled by the AE integration-time ratio, so it equals `total_gain` in a dark scene and drops far below it in a bright one. Quote `exposure`, not `total_gain`, when answering a day/night question; `total_gain` is kept for continuity with existing pages. `night_baseline` is the illuminator-lit night level at the last look (or the darker level it followed after 60 s 10 % above it), `day_trigger` the bar the reading **without** IR must fall below to ask for a day check (since v1.10.1 both are always published). **Since v1.12.0** `day_trigger` is the bar actually used, after the near-day rule and `k`, so it can be below `day_gain`. **Since v1.11.0** `color_trigger` (`"on"`, `"off"` = `color_pct` 0, no switchable illuminator, schedule or disabled, `"unavailable"` = this libimp gives no per-zone AWB statistics) and `color_dev_pct` (the lit picture's colour change since the last look in %, `-1` without a reference, e.g. in day or the first seconds after a look) belong to `daynight.color_pct`. `sun_computed_*` read `"--:--"` where the sun does not rise or set (polar latitudes). It also echoes the settable keys (`day_gain`, `night_gain`, `day_confirm_s`, `jump_pct`, `color_pct`, `heartbeat_s`, `heartbeat_max_s`, `interval_ms`, the Idle-Dark and calendar keys). The frozen-constant echoes of v1.10.0 (`ir_ratio_*`, `probe_settle_s`, …) are gone with the 1.10.1 engine. |
 | `last_errors` | `{"<MOD>": {"level","age_s","count","msg"}}` | One entry per module that has logged, with the most recent message and how many times it repeated. Useful once the 64 KB syslog ring has recycled. On v1.9.27 an entry captured before NTP sync shows an `age_s` of ~56 years; **since v1.9.28** ages are monotonic. |
-| `video.<N>.rotation_state` | int | **Since v1.10.1**, `USE_ROTATE` builds. `0` = stream runs as configured at the last start; else the `2xx` code why it runs unrotated (table in [`error-codes.md`](error-codes.md)). Refers to the running pipeline, not to a POSTed-but-not-restarted rotation. |
-| `video.<N>.rotate_path` | string | **Since v1.11.0**, `USE_ROTATE` builds. How the running stream is rotated, i.e. in which frame overlays live: `"off"` = not rotated (also a refused rotation); `"hw"` = OSD/privacy over the whole rotated frame (OpenIMP, and T40/T41 `180`); `"band"` = vendor libimp 90/270: OSD/privacy in rotated coordinates but only within the top `eff_width` rows (lower ones are moved up). OSD, privacy and the motion grid always use `eff_width`×`eff_height` coordinates. Absent = timps before 1.11.0. `"sw"` (the removed T23 software rotate) only from timps ≤ 1.11.1. |
+| `video.<N>.rotation_state` | int | **Since v1.10.1** (up to v1.12.0 only in `USE_ROTATE` builds). `0` = stream runs as configured at the last start; else the `2xx` code why it runs unrotated (table in [`error-codes.md`](error-codes.md)). Refers to the running pipeline, not to a POSTed-but-not-restarted rotation. |
+| `video.<N>.rotate_path` | string | **Since v1.11.0** (up to v1.12.0 only in `USE_ROTATE` builds). How the running stream is rotated, i.e. in which frame overlays live: `"off"` = not rotated (also a refused rotation); `"hw"` = OSD/privacy over the whole rotated frame (OpenIMP, and T40/T41 `180`); `"band"` = vendor libimp 90/270: OSD/privacy in rotated coordinates but only within the top `eff_width` rows (lower ones are moved up). OSD, privacy and the motion grid always use `eff_width`×`eff_height` coordinates. Absent = timps before 1.11.0. `"sw"` (the removed T23 software rotate) only from timps ≤ 1.11.1. |
 | `osd<S>.<N>.type` | `"text"` or `"logo"` | Read back as a **word**, unlike `record.mode` and `audio.backchannel_codec`, which read back as numbers. |
 
 ### The `caps` object — capability announcement
@@ -649,7 +651,7 @@ differently-compiled binaries.
 | `caps.rtsp_max_clients` / `http_max_clients` / `events_max_clients` | Concurrent-client ceilings (refusal points: RTSP, HTTP and events all answer `503`) |
 | `caps.motion` | `{available, max_cells}` — `available` = build has the IMP_IVS move API |
 | `caps.privacy` | `{available, max_regions}` — `available` reflects whether an OSD group actually exists in the running pipeline |
-| `caps.rotation[]` | Applicable rotation values, e.g. `[0,90,180,270]`. **Key absent entirely** when `USE_ROTATE=0` |
+| `caps.rotation[]` | Applicable rotation values, e.g. `[0,90,180,270]`; `[0]` on an SoC without a rotate path. Always present since the next release; up to v1.12.0 absent when `USE_ROTATE=0` |
 | `caps.record` / `caps.timelapse` | `{available: 0|1}` |
 | `caps.backchannel` | `{available, talk_ws}` — `talk_ws` is the *effective* mode: 0 not served, 1 served TLS-required, 2 served plaintext-ok |
 | `caps.play` | `{available, sounds:[...]}` — enumerates playable files |
@@ -662,8 +664,8 @@ The tier and SoC notes in this table are the v1.12.0 state; the `caps` of the
 running camera always win, and the OpenIMP side is tracked at
 <https://lu-fi.github.io/openimp/feature-matrix.html>.
 
-Note the deliberate convention: a key that is **absent** (`caps.rotation`,
-`caps.webrtc`) means "this binary has no such endpoint/feature at all", which
+Note the deliberate convention: a key that is **absent** (`caps.webrtc`;
+`caps.rotation` up to v1.12.0) means "this binary has no such endpoint/feature at all", which
 `{"available":0}` could not distinguish from "compiled in but switched off".
 
 `GET /control` also carries `tls:{available,https,rtsps,rtsps_port}` and
@@ -1163,7 +1165,8 @@ Distinguish **compiled out** from **misconfigured**:
 | --- | --- | --- |
 | `POST /control` returns `422 unknown_fields` | The key does not exist in this build | `GET /control?fields=1`, and the relevant `caps.*` |
 | Key accepted (`200`) but nothing happens | Restart-required key, or live path unavailable | `caps.restart`, `caps.video_live`, the POST reply's `deferred_keys` |
-| `caps.webrtc` / `caps.rotation` missing entirely | `USE_WEBRTC` / `USE_ROTATE` = 0 | Rebuild with the Kconfig option |
+| `caps.webrtc` missing entirely | `USE_WEBRTC` = 0 | Rebuild with the Kconfig option |
+| `caps.rotation` missing entirely | timps up to v1.12.0 built without `USE_ROTATE` (always built since the next release) | Update timps |
 | `record.available = 0` | `USE_RECORD` = 0 | Rebuild with `BR2_PACKAGE_TIMPS_RECORD` |
 | `tls.available = 0` but `http.https = 1` in the config | Binary has no mbedTLS | Rebuild with `BR2_PACKAGE_TIMPS_TLS` |
 | `/talk` answers 426 | `audio.talk_ws = 1` on a plaintext port | Either enable `http.https`, or set `audio.talk_ws = 2` (understanding that mic audio and the token then cross the network in clear) |
@@ -1381,8 +1384,9 @@ the kernel log and escalate.
 
 ### Rotation problems
 
-- `USE_ROTATE` is **off by default**. Without it, any non-zero
-  `videoN.rotation` is coerced to 0 with a warning.
+- Rotation is always built since the next release; up to v1.12.0 it was the
+  build option `USE_ROTATE`, **off by default**, and without it any non-zero
+  `videoN.rotation` was coerced to 0 with a warning.
 - `rotation = 180` is a real per-channel capability **only on T40/T41**.
   Everywhere else use `image.hflip = 1` + `image.vflip = 1`.
 - `90`/`270` do not exist on C100 at all, nor on T10/T20/T21/T23/T30 with

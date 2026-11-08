@@ -164,9 +164,9 @@ BC_TEST_FREQ="${BC_TEST_FREQ:-1500}"   # test-tone frequency (Hz), narrow + mid-
 BC_TEST_SECS="${BC_TEST_SECS:-4}"      # tone duration (s)
 
 # Optional rotation persist-only round-trip test (default OFF, never in a
-# profile): SoC-gated via caps.rotation (only present when USE_ROTATE was
-# compiled in, only advertises the degree values this SoC's rotation path
-# actually supports) - skips cleanly on a build without rotation support.
+# profile): SoC-gated via caps.rotation (the degree values this SoC's rotation
+# path supports; absent only on older builds compiled without USE_ROTATE)
+# - skips cleanly on a build without rotation support.
 TEST_ROTATION="${TEST_ROTATION:-0}"
 
 # Optional fatal-signal-handler test (default OFF, never in a profile,
@@ -4527,8 +4527,8 @@ else
 
 	# --- rotation (opt-in: --test-rotation) ---------------------------------
 	# video0.rotation is persist-only like bitrate above, AND SoC-gated:
-	# caps.rotation is only present when this build has USE_ROTATE compiled
-	# in, and only lists the degree values this SoC's rotation path actually
+	# caps.rotation is absent only on older builds compiled without
+	# USE_ROTATE, and lists the degree values this SoC's rotation path actually
 	# supports (0 always; 90/270 need a dim-swapping apply path - the
 	# framesource rotate or T40/T41 I2D; 180 an ISP flip). A build without
 	# rotation support simply omits the key - that is not a failure, so this
@@ -4539,7 +4539,7 @@ else
 		rot_caps=$(jget "$LV_BASE" caps.rotation)
 		if [ -z "${rot_caps:-}" ]; then
 			info "rotation: caps.rotation absent - not compiled into this build, skipping"
-			lv_mark_gated video "caps.rotation-absent(USE_ROTATE-not-built)" rotation
+			lv_mark_gated video "caps.rotation-absent(old-build-without-rotation)" rotation
 		else
 			info "rotation: SoC-supported values: $rot_caps"
 			rot_caps_norm=$(echo "$rot_caps" | tr -d ' []')   # "[0, 90, 180, 270]" -> "0,90,180,270"

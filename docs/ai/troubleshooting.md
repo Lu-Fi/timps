@@ -814,9 +814,10 @@ are restart-required. Restart: `/etc/init.d/S95timps restart`.
 
 ### 2.6 Rotation
 
-`USE_ROTATE` is **off by default** (`src/rotate_caps.h`). Without it, no
-`ROT_HAS_*` macro is defined and `config.c`'s `prot()` coerces every
-non-zero `videoN.rotation` to 0, logging
+Rotation is always built since the next release (up to v1.12.0 it was the
+build option `USE_ROTATE`, off by default). On an SoC without an apply path
+no `ROT_HAS_*` macro is defined (`src/rotate_caps.h`) and `config.c`'s
+`prot()` coerces every non-zero `videoN.rotation` to 0, logging
 `rotation <d> unsupported on this SoC -> 0`.
 
 Capability matrix (`src/rotate_caps.h`):
@@ -2422,7 +2423,6 @@ the **package defaults** (which differ from the bare `Makefile` defaults):
 | `…_TLS` | y | `USE_TLS` | HTTPS + RTSPS |
 | `…_WEBRTC` | y (needs TLS + CONTROL) | `USE_WEBRTC` | `/webrtc/whep` |
 | `…_SRT` | **n** | `USE_SRT` | SRT output |
-| `…_ROTATE` | **n** | `USE_ROTATE` | **all** rotation; `caps.rotation` is omitted entirely |
 | `…_OSD_HINTING` | **n** | `USE_OSD_HINTING` | OSD autohinting (~2.1 KB) |
 | `…_BACKCHANNEL` | **n** | `USE_BACKCHANNEL` | ONVIF backchannel, and the AO pipeline |
 | `…_BC_AAC` | **n** | `USE_BC_AAC` | AAC backchannel decode |
@@ -2431,6 +2431,9 @@ the **package defaults** (which differ from the bare `Makefile` defaults):
 | `…_PLAY_OPUS` | **n** | `USE_PLAY_OPUS` | Opus playback |
 | `…_STREAM_OPUS` | **n** | `USE_STREAM_OPUS` | Opus as an RTSP codec |
 | `…_DIAG_TOOLS` | **n** | — | `/usr/bin/timps-{selftest,logcat-ship,dn-isp-log}` |
+
+`…_ROTATE` (`USE_ROTATE`, default n) existed up to v1.12.0; since the next
+release rotation is always built.
 
 `USE_TRACE` has **no Kconfig symbol on purpose** — it is
 `make … TIMPS_TRACE=1 rebuild-timps` only, and the daemon announces it
@@ -2735,7 +2738,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | Message pattern | Level | Meaning | Action |
 | --- | --- | --- | --- |
 | `rotation %d invalid -> 0` | W | Not 0/90/180/270 (or the legacy 1/2). | Use a valid value. §2.6 |
-| `rotation %d unsupported on this SoC -> 0` | W | No 90/270 path here, or `USE_ROTATE` is off. | §2.6 |
+| `rotation %d unsupported on this SoC -> 0` | W | No 90/270 path here (up to v1.12.0 also: `USE_ROTATE` off). | §2.6 |
 | `rotation 180 unsupported on this SoC -> 0 (use image.hflip+image.vflip)` | W | 180 is real only on T40/T41. | `image.hflip = 1` + `image.vflip = 1`. |
 | `codec h265 unsupported on this SoC -> h264` | W | T10/T20/T23 have no H.265 encoder (T23: the SDK marks every H.265 rc struct unsupported). Coerced at parse time so the read-back matches what is emitted. | Use `h264`. |
 | `codec h265 needs an OpenIMP with T30 H.265 (OpenIMP_Cap_H265) -> h264` | W | **since v1.12.0.** T30 with OpenIMP: the libimp does not export `OpenIMP_Cap_H265`, so the stream runs H.264. The vendor T30 libimp takes h265 as configured. | Use `h264`, or an OpenIMP with T30 H.265. |

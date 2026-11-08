@@ -98,7 +98,8 @@ See [Motion Detection](Motion-Detection.md).
 
 ## Rotation capability tiers
 
-Image rotation (`videoN.rotation`, `USE_ROTATE`, off by default) has the
+Image rotation (`videoN.rotation`; always built since the next release, up to
+v1.12.0 the build option `USE_ROTATE`, off by default) has the
 most platform-fragmented capability story in the codebase — full detail
 lives in `docs/rotation.md`; the tiers are:
 
@@ -106,7 +107,7 @@ lives in `docs/rotation.md`; the tiers are:
 | --- | --- | --- | --- |
 | No rotation primitive | *(none)* | C100; T10, T20, T21, T23, T30 with the vendor libimp | `rotation` accepts only `0`; any 90/180/270 request is coerced to 0 with a warning. |
 | FrameSource software rotate | `ROT_HAS_FS_ROTATE` | T31; T10, T20, T21, T23, T30 with OpenIMP | `IMP_FrameSource_SetChnRotate` — rotation happens inside libimp, not visible to the rest of timps as "software," but still not true hardware. Hardware OSD/privacy overlays work on rotated 90/270 streams (fixed 2026-07-23) but are confined to a top-band region on non-square rotated streams due to an OSD coordinate range-check quirk (vendor libimp only). On T10/T20/T21 (OpenIMP only, since v1.10.0, not yet tested on hardware): sub streams only, 16-aligned, at most 704x576, whatever the libimp reports; `video0` and anything larger start unrotated. Every OpenIMP SoC needs an OpenIMP that rotates there (T1x first in commit `6b7f5ae`); without `OpenIMP_Cap_FsRotate` timps probes `SetChnRotate` with a 0x0 picture at start and brings the stream up unrotated when the OpenIMP stubs (`9cab219`, returns success without rotating) or refuses (`6857610`, `0c02f45`, `636b6ac`) it. Since v1.12.0 T23 and T30 OpenIMP builds use the same path (OpenIMP `next` `17082ed3` or later); an OpenIMP exporting `OpenIMP_Cap_FsRotate` skips the 0x0 probe, and `OpenIMP_FS_RotateLimits` sets the envelope per channel (current OpenIMP: T31 4096x4096 align 2; T10/T20/T21 704x576, T23 and T30 1280x720, align 16; no fps cap). The timps-own T23 software path was removed in v1.12.0, together with its `USE_SW_ROTATE` knob. |
-| True hardware I2D rotate | `ROT_HAS_HW_I2D` | T40, T41 | The dedicated I2D hardware block. Full framerate, all resolutions. With the vendor libimp timps applies the same top-band OSD/privacy clamp on 90/270 as on T31 (`video.<N>.rotate_path` = `band`; whether this libimp needs it is not verified on hardware); OpenIMP and `180` draw over the whole frame. The only tier where `rotation=180` is a real, distinct, **per-channel** capability (elsewhere, 180 was removed as a redundant, incorrectly-per-stream-modeled *global* ISP flip — use `image.hflip`+`image.vflip` instead, which is always available independent of `USE_ROTATE`). |
+| True hardware I2D rotate | `ROT_HAS_HW_I2D` | T40, T41 | The dedicated I2D hardware block. Full framerate, all resolutions. With the vendor libimp timps applies the same top-band OSD/privacy clamp on 90/270 as on T31 (`video.<N>.rotate_path` = `band`; whether this libimp needs it is not verified on hardware); OpenIMP and `180` draw over the whole frame. The only tier where `rotation=180` is a real, distinct, **per-channel** capability (elsewhere, 180 was removed as a redundant, incorrectly-per-stream-modeled *global* ISP flip — use `image.hflip`+`image.vflip` instead, which is always available). |
 
 `ROT_HAS_90` (gating whether 90/270 are accepted at all) is defined
 whenever either apply-path macro above is active, or on the

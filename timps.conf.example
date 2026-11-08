@@ -327,10 +327,8 @@ video1.jpeg_chn     = 4
 # pipeline). The advertised/recorded dimensions swap for 90/270 (a rotated
 # 1920x1080 becomes 1080x1920). See docs/rotation.md for full detail.
 #
-# OFF BY DEFAULT - must be enabled at build time (menuconfig), like AAC/TLS:
-#   BR2_PACKAGE_TIMPS_ROTATE      -> 90/270 on T31/T40/T41 (+180 on T40/T41),
-#                                    T10/T20/T21/T23/T30 with OpenIMP
-# Without it, 90/180/270 in this file are ignored (coerced to 0 with a warn).
+# Always built (up to v1.12.0 a build option, BR2_PACKAGE_TIMPS_ROTATE). Where
+# the chip or libimp has no rotate path, 90/180/270 are coerced to 0 with a warn.
 #
 # What each chip supports:
 #   T40, T41 : 90/180/270 in HARDWARE (I2D) - full fps, any res

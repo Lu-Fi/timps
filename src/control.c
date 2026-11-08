@@ -1202,11 +1202,9 @@ int control_apply_json(const char *json, ctrl_result *res)
             char pre[8]; snprintf(pre,sizeof pre,"video%d",i);
             apply_ctrl_fields(&sc, ch, pre, ib, ie, vid_tbl, nvid);
             ign_scan(&sc, pre, ib, ie, vid_tbl, nvid, NULL);
-#ifdef USE_ROTATE
             static const char *const rk[] = {"rotation","width","height","fps","enabled"};
             for (unsigned k=0; k<sizeof rk/sizeof rk[0]; k++)
                 if (find_field(ib, ie, rk[k])) { rot_chk |= 1u<<i; break; }
-#endif
         }
     }
 
@@ -1332,7 +1330,6 @@ int control_apply_json(const char *json, ctrl_result *res)
      * changed. */
     hub_control_commit();
 
-#ifdef USE_ROTATE
     /* rotation is restart-only: say now what the next start will refuse */
     for (int i=0;i<MS_MAX_VSTREAM;i++){
         /* numeric fields only, and apply_mu keeps other writers out */
@@ -1344,9 +1341,6 @@ int control_apply_json(const char *json, ctrl_result *res)
             err_add(&sc, key, rc);
         }
     }
-#else
-    (void)rot_chk;
-#endif
 
     /* persist: rate-limited (persist_gate.h); restart-required keys at once,
      * the restart that follows reads the file */
@@ -1806,12 +1800,10 @@ static int get_json(char *buf, size_t cap)
      * only a rotation value on T40/T41 (ROT_HAS_HW_I2D), where it is a genuine
      * per-channel hardware I2D flip; on every other SoC 180 was a redundant
      * global ISP Hflip+Vflip and was removed (use image.hflip + image.vflip
-     * there). The WebUI greys out whatever isn't listed. Only reported when
-     * USE_ROTATE compiled the feature in; otherwise the key is omitted (the
-     * WebUI hides the control). Fragments are ordered so the array is ascending
+     * there). The WebUI greys out whatever isn't listed. Fragments are
+     * ordered so the array is ascending
      * ([0,90,180,270] on T40/T41, [0,90,270] where only 90/270 exist, [0]
      * where nothing does). */
-#ifdef USE_ROTATE
     if (!hal_rot_hw_ok()) APP("\"rotation\":[0],");
     else APP("\"rotation\":[0"
 #ifdef ROT_HAS_90
@@ -1824,7 +1816,6 @@ static int get_json(char *buf, size_t cap)
         ",270"
 #endif
         "],");
-#endif /* USE_ROTATE */
 #ifdef USE_RECORD
     APP("\"record\":{\"available\":1},");
 #else
@@ -2037,7 +2028,6 @@ static int get_json(char *buf, size_t cap)
         config_get_kv(c, key, rc, sizeof rc);
         config_str_unlock();
         jesc(vs->rtsp_path, rp, sizeof rp);
-#ifdef USE_ROTATE
         /* ACTUAL running dims - but only when vs (the live/persist-only
          * config, possibly POSTed-but-not-yet-restarted) still matches what
          * actually booted: hub_get_video_params() reflects any T23 SW-rotate
@@ -2070,22 +2060,6 @@ static int get_json(char *buf, size_t cap)
             vs->qp, vs->min_qp, vs->max_qp, vs->quality_lvl,
             vs->change_pos, vs->i_bias_lvl, vs->fluc_lvl, vs->mbrc, vs->rotation,
             hal_rot_state(i), hal_rot_path(i), vs->buffers, rp);
-#else
-        /* rotation compiled out: omit eff_width/eff_height and the rotation
-         * value is always 0 (prot() coerced it), so eff == raw dims anyway. */
-        APP("%s\"%d\":{\"enabled\":%d,\"codec\":\"%s\",\"width\":%d,"
-            "\"height\":%d,"
-            "\"fps\":%d,\"bitrate\":%d,\"rc_mode\":\"%s\","
-            "\"gop\":%d,\"max_gop\":%d,\"profile\":%d,\"qp\":%d,"
-            "\"min_qp\":%d,\"max_qp\":%d,\"quality_lvl\":%d,"
-            "\"change_pos\":%d,\"i_bias_lvl\":%d,\"fluc_lvl\":%d,\"mbrc\":%d,"
-            "\"rotation\":%d,\"buffers\":%d,"
-            "\"rtsp_path\":\"%s\"}",
-            i?",":"", i, vs->enabled, cod, vs->width, vs->height, vs->fps,
-            vs->bitrate_kbps, rc, vs->gop, vs->max_gop, vs->profile,
-            vs->qp, vs->min_qp, vs->max_qp, vs->quality_lvl,
-            vs->change_pos, vs->i_bias_lvl, vs->fluc_lvl, vs->mbrc, vs->rotation, vs->buffers, rp);
-#endif /* USE_ROTATE */
     }
     /* osd: master switch + the other osd.* globals (monitor_stream/font_path/
      * supersample/hinting, all POST-able via the "osd" section handler

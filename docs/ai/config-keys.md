@@ -596,11 +596,12 @@ hit this — T10, T20 and T23 coerce `codec` to `h264` at parse time.
 
 ### `rotation` in detail (`src/rotate_caps.h`)
 
-* The whole feature is a **build-time opt-in**: without `USE_ROTATE`
-  (`BR2_PACKAGE_TIMPS_ROTATE`, default `n`) no `ROT_HAS_*` macro is defined and
-  `prot()` coerces every non-zero rotation to `0`. `GET /control` then omits the
-  `caps.rotation` key entirely.
-* With `USE_ROTATE`, 90/270 need a real transpose path:
+* **Since the next release** rotation is always built; up to v1.12.0 it was a
+  build option (`USE_ROTATE`, Kconfig `BR2_PACKAGE_TIMPS_ROTATE`, default `n`)
+  and without it `caps.rotation` was omitted. An SoC without an apply path
+  defines no `ROT_HAS_*` macro, and `prot()` coerces every non-zero rotation to
+  `0` there; `caps.rotation` is then `[0]`.
+* 90/270 need a real transpose path:
   * **T40/T41** — hardware I2D (`ROT_HAS_HW_I2D`), 90/180/270 per stream.
     **Since v1.11.0** the framesource stays at the unrotated size and only the
     encoder gets the swapped one (vendor and OpenIMP semantics); width and
@@ -1629,12 +1630,15 @@ Every one maps to `USE_<X>=$(if $(BR2_PACKAGE_TIMPS_<X>),1,0)` in
 | `BR2_PACKAGE_TIMPS_WEBRTC` | **y** | depends on `TIMPS_TLS` **and** `TIMPS_CONTROL`; selects `BR2_PACKAGE_MBEDTLS_DTLS_SRTP` | `-DUSE_WEBRTC` (forces `USE_TLS`/`USE_CONTROL`) | `POST /webrtc/whep` ICE-lite + DTLS-SRTP, H.264 + G.711, max 4 sessions | `/webrtc/whep` not served (404); the `webrtc.*` keys are unknown. |
 | `BR2_PACKAGE_TIMPS_SRT` | **n** *(no `default` line at all)* | selects `BR2_PACKAGE_LIBSRT` | `-DUSE_SRT` | MPEG-TS over SRT | No SRT listener/caller; `srt.*` keys are inert. |
 | `BR2_PACKAGE_TIMPS_OSD_HINTING` | **n** | — | `-DUSE_OSD_HINTING` | Geometric OSD-text autohinter in the TTF rasterizer (~2.1 KB) | `osd.hinting` is the textbook "parses but does nothing": accepted, clamped, persisted, echoed, no visual change. `config.c` logs one WARN per session saying so. |
-| `BR2_PACKAGE_TIMPS_ROTATE` | **n** | — | `-DUSE_ROTATE` | The whole rotation feature | **Byte-identical build.** `videoN.rotation` coerces every non-zero value to `0`; `caps.rotation` is omitted. |
 | `BR2_PACKAGE_TIMPS_BACKCHANNEL` | **n** | — | `-DUSE_BACKCHANNEL` | ONVIF audio backchannel via native `IMP_AO` (no external `/bin/iac`); G.711 decode is pure C. Uncomments `audio.backchannel = 1` in the shipped config. | No talk-back; `audio.backchannel` inert; `caps.backchannel.available = 0`. |
 | `BR2_PACKAGE_TIMPS_BC_AAC` | **n** | depends on `TIMPS_BACKCHANNEL`; selects `BR2_PACKAGE_LIBHELIX_AAC` | `-DUSE_BC_AAC` (forces `USE_BACKCHANNEL`) | AAC backchannel decode | Backchannel accepts G.711 only; an ONVIF client offering `mpeg4-generic` AAC is rejected. |
 | `BR2_PACKAGE_TIMPS_BC_WS` | **y if `BR2_PACKAGE_TIMPS_TLS`**, else n | depends on `TIMPS_BACKCHANNEL` **and** `TIMPS_CONTROL` | `-DUSE_BC_WS` (forces both) | `/talk` WebSocket: browser mic → G.711 in an AudioWorklet → the same `IMP_AO` path (~8 KB, no new library). Uncomments `audio.talk_ws = 1` (only the strict value 1, never 2). | `wss://<cam>:<http_port>/talk` not served; the backchannel is reachable only from an ONVIF client or NVR. |
 | `BR2_PACKAGE_TIMPS_PLAY` | **n** | — | `-DUSE_PLAY` | Play-FIFO at `/run/timps/audio_out`, WAV + raw PCM16; installs `/usr/sbin/play` | No `/usr/sbin/play`. The WiFi captive-portal prompts, the post-upgrade chime and the Home Assistant ESPHome media_player/TTS integration are silent no-ops. |
 | `BR2_PACKAGE_TIMPS_PLAY_OPUS` | **n** | depends on `TIMPS_PLAY`; selects `BR2_PACKAGE_OPUSFILE` | `-DUSE_PLAY_OPUS` (forces `USE_PLAY`) | Ogg-Opus decode in the play queue | Play queue is WAV/PCM only; thingino's shipped `/usr/share/sounds/*.opus` will not play. |
+
+`BR2_PACKAGE_TIMPS_ROTATE` (`-DUSE_ROTATE`, default `n`) existed up to v1.12.0;
+since the next release rotation is always built and the symbol goes away with
+the next timps package update.
 
 ### 22.3 Audio backchannel preset (a Kconfig `choice`)
 

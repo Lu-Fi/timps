@@ -168,7 +168,6 @@ paths.
 | `USE_BC_WS` | also serve the backchannel to a browser over a WebSocket (`/talk`, G.711 mu-law). Off by default; implies `USE_BACKCHANNEL`+`USE_CONTROL`. `USE_TLS` is recommended, not required (without it only `audio.talk_ws=2`, plain `ws://`, is usable) |
 | `USE_PLAY` | system-sound play queue (`/usr/sbin/play` protocol via a FIFO), native `IMP_AO`. Off by default |
 | `USE_PLAY_OPUS` | also decode Ogg-Opus in the play queue (needs `opusfile`); WAV/PCM/G.711 always work without it |
-| `USE_ROTATE` | image rotation (`videoN.rotation = 0\|90\|270`, plus `180` on T40/T41). Off by default |
 | `USE_TLS` | HTTPS (`http.https`) + RTSPS (`rtsp.tls`) via mbedTLS. Auto-enabled when `libmbedtls` is linked |
 | `USE_SRT` | MPEG-TS over SRT output, listener (`srt.mode=listener`, default) or caller (`srt.mode=caller`). Auto-enabled when `libsrt` is linked |
 | `USE_WEBRTC` | WHEP endpoint (`/webrtc/whep`): ICE-lite + DTLS-SRTP, H.264 video + optional G.711 audio. Off by default; implies `USE_TLS`+`USE_CONTROL` and needs an mbedTLS with `MBEDTLS_SSL_DTLS_SRTP`. LAN/VPN only — see [WebRTC / WHEP](#webrtc--whep-webrtcwhep) |
@@ -353,8 +352,9 @@ by default (as long as OSD or a privacy region was on at startup). Details:
 
 ### Image rotation
 
-`videoN.rotation = 0|90|270` (plus `180` on T40/T41), `USE_ROTATE` (off by
-default, restart-required). 90/270 on T31 (libimp FrameSource rotate) and
+`videoN.rotation = 0|90|270` (plus `180` on T40/T41), restart-required.
+Always built since the next release (up to v1.12.0 the build option
+`USE_ROTATE`, off by default). 90/270 on T31 (libimp FrameSource rotate) and
 T40/T41 (hardware I2D). With `USE_OPENIMP`, 90/270 on T10/T20/T21/T23/T30
 through `IMP_FrameSource_SetChnRotate`, a software rotate inside OpenIMP,
 within the limits OpenIMP reports (`OpenIMP_Cap_FsRotate` /

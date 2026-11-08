@@ -21,8 +21,8 @@ software path, appears only on timps ≤ 1.11.1.
 > it on one stream silently flipped every other enabled stream too). It was
 > **removed** on those SoCs: a `rotation=180` request there is coerced to 0 with
 > a warning, exactly like an unsupported 90/270 request — **for a 180° flip set
-> `image.hflip=1` and `image.vflip=1`** (independent of `USE_ROTATE`, always
-> available; note it is a global flip).
+> `image.hflip=1` and `image.vflip=1`** (always available; note it is a
+> global flip).
 > **On T40/T41, `rotation=180` is retained** — there it is a genuine
 > *per-channel* hardware I2D flip (flip+mirror) scoped to just the requesting
 > video stream, something the global `image.hflip`/`image.vflip` cannot do on
@@ -33,14 +33,17 @@ live. Downstream (encoder, RTSP SDP, fMP4/MP4 recorder, OSD, snapshots) all use
 the post-rotation dimensions via one helper (`ms_vstream_eff_dims`), so a
 rotated 1920×1080 stream is advertised and recorded as 1080×1920.
 
-## Enabling it (build option / menuconfig)
+## Enabling it
 
-Rotation is **off by default** and selectable like `USE_CONTROL`/`USE_TLS`/
-`USE_FAAC` — it costs nothing when disabled (all code `#ifdef`'d out).
+**Since the next release** rotation is always built, on every SoC; nothing to
+select at build time. `videoN.rotation` still defaults to `0`. An SoC without
+a 90/270 path (C100; T10/T20/T21/T23/T30 with the vendor libimp) coerces
+90/180/270 to `0`, and `caps.rotation` is then `[0]`.
 
-| menuconfig option | make flag | what it adds |
-|---|---|---|
-| `BR2_PACKAGE_TIMPS_ROTATE` | `USE_ROTATE=1` | real 90/270 transpose on the SoCs that have it (T31, T40, T41; since v1.10.0 T10/T20/T21 and since v1.12.0 T23/T30 in OpenIMP builds, see below), plus genuine per-channel 180° on T40/T41 (I2D). No effect on SoCs without a 90/270 path — for a 180° flip there use `image.hflip`+`image.vflip` instead |
+Up to v1.12.0 rotation was a build option, off by default:
+`BR2_PACKAGE_TIMPS_ROTATE` / `USE_ROTATE=1`. Without it all rotation code
+compiled out, every 90/180/270 request coerced to 0 and `caps.rotation` was
+omitted. The Kconfig symbol goes away with the next timps package update.
 
 Up to v1.11.1 a second option, `BR2_PACKAGE_TIMPS_SW_ROTATE` / `USE_SW_ROTATE=1`,
 added a timps-own T23 software path (CPU transpose + unbound YUV encode).
@@ -50,9 +53,9 @@ v1.12.0 removed the path and both knobs; T23 rotates through OpenIMP.
 
 Binary (code, measured as object `.text`; MIPS target ≈ 1.2–1.4× these host figures):
 
-- `USE_ROTATE` alone: the config/caps plumbing plus the hardware 90/270 apply is
-  only a few hundred bytes on T31/T40/T41. Negligible. (On a SoC with no 90/270
-  path it adds nothing usable — `rotation` accepts no non-zero value there.)
+- Always built since the next release: about +1.1 to +2.8 KB code and +0.5
+  to +1.3 KB xz-compressed per SoC (target binaries, against a build without
+  `USE_ROTATE`). On an SoC with no 90/270 path it adds nothing usable.
 - T10/T20/T21 with OpenIMP: the rotation runs inside OpenIMP (one heap
   scratch of w×h×1.5 per rotated channel, ~345 KB for 640×368, no extra rmem;
   OpenIMP estimates 3.5-7.5 ms per frame, i.e. ~5-11 % CPU at 15 fps — not
@@ -78,10 +81,6 @@ the global `image.hflip`+`image.vflip` there instead.)
 | **T23, T30** with OpenIMP (since v1.12.0) | ❌ (use `image.hflip`+`vflip`) | ✅ *(OpenIMP `next` `17082ed3` or later)* | `IMP_FrameSource_SetChnRotate`, a software rotate inside OpenIMP (T23 commit `4738c802`, T30 `2bb28bc7`) | without `OpenIMP_FS_RotateLimits` as T10/T20/T21; with it the envelope comes from OpenIMP (currently T23 and T30 at most **1280×720**, 16-aligned, every stream, no fps cap). OSD, privacy masks, IVS/motion and the encoder see the rotated frame; hardware OSD is kept. Up to v1.11.1 T23 had a timps-own software path that turned `90` clockwise; the FrameSource rotate turns it counter-clockwise, so a T23 with `90` needs `270` now (and the other way round) |
 | **T31** | ❌ (use `image.hflip`+`vflip`) | ✅ | `IMP_FrameSource_SetChnRotate` (software inside libimp) | libimp SDK ≥ 1.1.6; 64-px-aligned resolution; **≤1280×704 @ ≤15 fps** recommended; extra rmem; not combinable with encoder soft-zoom; **hardware OSD/privacy DO work on 90/270** (fixed 2026-07-23) — on a **non-square** rotated stream overlays are confined to the top `picHeight` band (see note below); square streams = anywhere |
 | **T40, T41** | ✅ **per-channel** (I2D flip+mirror) | ✅ | true **hardware** I2D rotate (`IMPFSI2DAttr` + `IMP_FrameSource_SetI2dAttr`) | full frame rate, all resolutions. OSD + privacy work; with the vendor libimp timps applies the T31 top-band clamp on 90/270 too (`rotate_path` `band`, not verified on hardware whether this libimp needs it). 180 flips only the requesting channel (unlike the global `image.hflip`/`vflip`). `rotate_angle` units await on-device confirmation (degrees) |
-
-Note: without `USE_ROTATE` (the default), all rotation code compiles out and
-every 90/180/270 request coerces to 0 — the build is byte-identical to
-no-rotation.
 
 ### T10/T20/T21 with OpenIMP: which OpenIMP rotates
 

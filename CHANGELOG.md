@@ -8,6 +8,13 @@ semantic versioning.
 
 ### Changed
 
+- Image rotation is always built: the `USE_ROTATE` build option is gone, and
+  `caps.rotation` is always reported. `videoN.rotation` still defaults to `0`,
+  so nothing rotates unless configured; an SoC or libimp without a rotate path
+  still coerces 90/180/270 to 0. Cost: about 1.1-2.8 KB code (0.5-1.3 KB
+  compressed) per SoC. The thingino option `BR2_PACKAGE_TIMPS_ROTATE` goes away
+  with the package update to this release.
+
 - AI docs: honesty rule, per-feature availability, example Q&A, bug-report checklist, config-key check script
 
 ## [1.12.0] - 2026-11-07

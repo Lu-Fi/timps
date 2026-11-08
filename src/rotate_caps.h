@@ -4,11 +4,8 @@
  * commit that implements its apply path; Batch 1 leaves the target apply
  * macros OFF (behaviour-neutral). The host sim advertises everything.
  *
- * The ENTIRE body is a compile-time opt-in via USE_ROTATE (Makefile knob /
- * BR2_PACKAGE_TIMPS_ROTATE, mirroring USE_CONTROL/USE_TLS/USE_FAAC). When
- * USE_ROTATE is undefined NO ROT_HAS_* macro is defined, so every
- * `#ifdef ROT_HAS_*` block in the code compiles out and config.c's prot()
- * coerces every 90/180/270 request to 0 - the feature costs zero bytes.
+ * Always built (USE_ROTATE was removed): an SoC without an apply path
+ * defines no ROT_HAS_* macro, and config.c's prot() coerces 90/180/270 to 0.
  *
  * NOTE on rotation=180 (platform-nuanced): on every classic-API SoC
  * (T10/T20/T21/T23/T30/T31/C100) 180 was only ever a global ISP Hflip+Vflip -
@@ -23,7 +20,6 @@
  * a standalone 180 macro. On classic-API SoCs and the host sim (no
  * ROT_HAS_HW_I2D) `rotation` still only ever means a real transpose (90/270) or
  * 0/absent. */
-#ifdef USE_ROTATE
 #if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)|| \
     defined(PLATFORM_T23)||defined(PLATFORM_T30)||defined(PLATFORM_T31)|| \
     defined(PLATFORM_T40)||defined(PLATFORM_T41)||defined(PLATFORM_C100)
@@ -54,5 +50,4 @@
 #if defined(ROT_HAS_HW_I2D)||defined(ROT_HAS_FS_ROTATE)||!defined(ROT_PLATFORM_KNOWN)
 #define ROT_HAS_90 1
 #endif
-#endif /* USE_ROTATE */
 #endif

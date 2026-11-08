@@ -196,7 +196,7 @@ not do.
   `OpenIMP_Cap_T23HelixRoi`; `experimental` on vendor T10/T20/T21 and on
   OpenIMP T40/T41 with `OpenIMP_Cap_EncRoi`; not on vendor T23/T30/T31/T40/T41
   and not on C100.
-* **Image rotation (optional, `USE_ROTATE`)** – `videoN.rotation = 0|90|180|270`.
+* **Image rotation** – `videoN.rotation = 0|90|180|270`.
   Hardware 90/270 on T40/T41 (I2D) and T31 (FrameSource). **Since v1.10.0**
   also FrameSource rotation on T10/T20/T21, only in OpenIMP builds and only with
   an OpenIMP that rotates on T1x (first commit `6b7f5ae`), sub-streams only,
@@ -218,7 +218,8 @@ not do.
   stream `video.<N>.rotate_path`: `off`, `band`
   (vendor libimp 90/270: OSD/privacy only in the top `eff_width`
   rows) or `hw` (whole image).
-  *Availability:* build option `USE_ROTATE` (Kconfig default n). T40/T41 (OpenIMP: only
+  *Availability:* always built since the next release (up to v1.12.0 the build
+  option `USE_ROTATE`, Kconfig default n). T40/T41 (OpenIMP: only
   with `OpenIMP_Cap_I2dRotate`) and T31 with both libimps; T10/T20/T21/T23/T30
   OpenIMP only; not on C100.
 
@@ -881,7 +882,6 @@ Package: `package/timps` – selected via *Streamer Packages → Streamer → ti
 | `BR2_PACKAGE_TIMPS_BC_WS` | `USE_BC_WS` | y on TLS builds | `/talk` for browsers (~8 KB) |
 | `BR2_PACKAGE_TIMPS_PLAY` | `USE_PLAY` | n | System sound queue + `/usr/sbin/play` |
 | `BR2_PACKAGE_TIMPS_PLAY_OPUS` | `USE_PLAY_OPUS` | n | Ogg Opus in the play queue (opusfile) |
-| `BR2_PACKAGE_TIMPS_ROTATE` | `USE_ROTATE` | n | Image rotation |
 | `BR2_PACKAGE_TIMPS_OSD_HINTING` | `USE_OSD_HINTING` | n | OSD autohinting (~2 KB) |
 
 Plus the combined option **"Audio backchannel preset"** (MANUAL / FULL / MINIMAL),
@@ -905,7 +905,7 @@ feature unavailable at run time when the libimp lacks them. Live state:
 
 | Feature | SoCs | Default | How to enable | Since |
 | --- | --- | --- | --- | --- |
-| FrameSource rotation 90/270 | T10/T20/T21 (sub stream only, at most 704x576, align 16; not yet tested on hardware); T23/T30 (the limits OpenIMP reports, 1280x720 align 16 in v1.12.0; without them sub stream only, 704x576) | off (`videoN.rotation = 0`) | build with `BR2_PACKAGE_TIMPS_ROTATE` (default n), an OpenIMP that rotates on the SoC, `videoN.rotation = 90` or `270`; restart | v1.10.0 (T10/T20/T21), v1.12.0 (T23/T30) |
+| FrameSource rotation 90/270 | T10/T20/T21 (sub stream only, at most 704x576, align 16; not yet tested on hardware); T23/T30 (the limits OpenIMP reports, 1280x720 align 16 in v1.12.0; without them sub stream only, 704x576) | off (`videoN.rotation = 0`) | an OpenIMP that rotates on the SoC (up to v1.12.0 also `BR2_PACKAGE_TIMPS_ROTATE`, default n), `videoN.rotation = 90` or `270`; restart | v1.10.0 (T10/T20/T21), v1.12.0 (T23/T30) |
 | Encoder ROI, tier `effective` | T10/T20/T21/T30/T31; T23 with `OpenIMP_Cap_T23HelixRoi`; T40/T41 only `experimental`, with `OpenIMP_Cap_EncRoi` | off (`roi<S>.<N>.enabled = 0`) | `roi<S>.<N>.*`, live POST; H.264 and unrotated streams only | v1.10.0; T23 v1.10.1; T40/T41 v1.11.0; T30 v1.12.0 |
 | ISP FrontCrop (zoom), tier `effective` | T10/T20/T21; T23/T31 when the open-tx-isp driver has `fcrop_upscale_pct` (otherwise `experimental`, T23 start-only) | off (`image.fcrop_enable = 0`) | `image.fcrop_enable` and `image.fcrop_x/y/w/h`, live POST | v1.10.0 |
 | Crop upscaling | T23/T31 | `image.fcrop_upscale_pct = -1` (driver value) | live POST, at most `caps.fcrop.upscale_max` | v1.11.0 |
@@ -1002,8 +1002,9 @@ these docs make no claim about them).
 
 **Q: I set `videoN.rotation = 90` on a T23 (or T30) and the picture is not
 rotated.**
-A: Rotation on T23/T30 exists since v1.12.0, only in a build with
-`USE_ROTATE` (`BR2_PACKAGE_TIMPS_ROTATE`, default n) and only with OpenIMP:
+A: Rotation on T23/T30 exists since v1.12.0 and only with OpenIMP (in v1.12.0
+also only in a build with `USE_ROTATE`, `BR2_PACKAGE_TIMPS_ROTATE`, default n;
+always built since the next release):
 the vendor libimp has no `SetChnRotate`, so a vendor build turns 90/270 into
 `0`. With OpenIMP it needs an OpenIMP whose `SetChnRotate` really rotates
 (T30: OpenIMP `next` `17082ed3` or later); the stream must fit the limits
