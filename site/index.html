@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>timps - tiny imp streamer</title>
+<meta name="description" content="timps is a small RTSP / fragmented-MP4 / MJPEG / WebRTC / SRT streamer for Ingenic SoC IP cameras, one of the streamer choices in thingino firmware.">
+<link rel="icon" href="assets/favicon-64.png" type="image/png">
+<link rel="apple-touch-icon" href="assets/timps-icon.png">
+<style>
+:root {
+  --bg: #f8fafc; --panel: #ffffff; --panel-2: #f1f5f9; --line: #e2e8f0;
+  --text: #0f172a; --muted: #475569; --faint: #64748b;
+  --accent: #0d9488; --accent-2: #0f766e; --accent-bg: #ccfbf1; --code: #0f172a;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0b1120; --panel: #111827; --panel-2: #0f172a; --line: #1f2937;
+    --text: #e2e8f0; --muted: #94a3b8; --faint: #64748b;
+    --accent: #2dd4bf; --accent-2: #14b8a6; --accent-bg: #134e4a; --code: #e2e8f0;
+  }
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 16px/1.6 "Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { font: 0.9em ui-monospace, "DejaVu Sans Mono", Menlo, monospace; color: var(--code);
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 5px; padding: 0.05em 0.35em; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 0 16px; }
+header.top { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
+header.top .wrap { display: flex; align-items: center; gap: 16px; height: 56px; }
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 800; color: var(--text); letter-spacing: 0.5px; }
+.brand img { width: 30px; height: 30px; }
+nav { margin-left: auto; display: flex; gap: 18px; flex-wrap: wrap; font-size: 0.92rem; }
+nav a { color: var(--muted); }
+nav a:hover { color: var(--text); text-decoration: none; }
+.hero { padding: 40px 0 8px; }
+.hero-top { display: flex; gap: 32px; align-items: center; }
+.hero-top .badge { width: 280px; height: auto; flex: none; filter: drop-shadow(0 8px 24px rgba(0,0,0,0.35)); }
+.hero h1 { font-size: 2.6rem; margin: 0; line-height: 1.1; letter-spacing: 0.5px; }
+.hero h1 span { display: block; font-size: 1rem; font-weight: 700; letter-spacing: 4px; text-transform: uppercase; color: var(--accent); margin-top: 6px; }
+.hero p.lead { font-size: 1.15rem; color: var(--muted); max-width: 720px; margin: 18px 0; }
+.hero p.lead strong { color: var(--text); }
+.pill { display: inline-flex; align-items: center; gap: 8px; font-size: 0.9rem; color: var(--muted);
+  border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 4px 12px; }
+.pill b { color: var(--text); }
+.btns { display: flex; gap: 10px; flex-wrap: wrap; margin: 18px 0 0; }
+.btn { display: inline-block; padding: 9px 16px; border-radius: 8px; font-weight: 600; border: 1px solid var(--line);
+  background: var(--panel); color: var(--text); }
+.btn.primary { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
+.btn:hover { text-decoration: none; filter: brightness(1.08); }
+section { padding: 36px 0 8px; }
+h2 { font-size: 1.4rem; margin: 0 0 4px; }
+.sub { color: var(--muted); margin: 0 0 18px; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-top: 28px; }
+.stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+.stat .n { font-size: 1.7rem; font-weight: 800; line-height: 1.2; }
+.stat .l { color: var(--muted); font-size: 0.92rem; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+.card h3 { margin: 0 0 6px; font-size: 1rem; }
+.card p { margin: 0; color: var(--muted); font-size: 0.94rem; }
+.socs { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.soc { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.soc .name { font-weight: 800; font-size: 1.1rem; }
+.soc .tag { display: inline-block; font-size: 0.75rem; font-weight: 600; color: var(--accent);
+  background: var(--accent-bg); border-radius: 999px; padding: 1px 8px; margin-left: 6px; vertical-align: 2px; }
+.soc .note { color: var(--muted); font-size: 0.86rem; margin-top: 4px; }
+.news { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 20px; }
+.news ul { margin: 10px 0; padding-left: 20px; }
+.news li { margin: 6px 0; color: var(--muted); }
+.news li strong { color: var(--text); }
+.tbl { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+table { border-collapse: collapse; width: 100%; font-size: 0.93rem; }
+th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; background: var(--panel-2); }
+tr:last-child td { border-bottom: 0; }
+td code { white-space: nowrap; }
+pre { background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+  overflow-x: auto; font: 0.9rem/1.5 ui-monospace, "DejaVu Sans Mono", Menlo, monospace; }
+.split { display: flex; gap: 32px; align-items: center; }
+.split > div { flex: 1; min-width: 0; }
+.split .mascot { width: 220px; height: auto; flex: none; }
+.docs { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.docs a { display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; color: var(--text); }
+.docs a span { display: block; color: var(--muted); font-size: 0.88rem; }
+.docs a:hover { border-color: var(--accent); text-decoration: none; }
+footer { margin: 48px 0 0; padding: 20px 0 32px; border-top: 1px solid var(--line); color: var(--faint); font-size: 0.88rem; }
+footer .wrap { display: flex; gap: 16px; flex-wrap: wrap; justify-content: space-between; }
+@media (max-width: 640px) {
+  nav { display: none; }
+  .hero { padding-top: 24px; }
+  .hero-top { flex-direction: column; align-items: flex-start; gap: 16px; }
+  .hero-top .badge { width: 200px; }
+  .split { flex-direction: column; align-items: flex-start; }
+  .split .mascot { width: 160px; }
+  .stat .n { font-size: 1.4rem; }
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="#"><img src="assets/timps-icon.png" alt="">timps</a>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#socs">SoCs</a>
+      <a href="#new">What's new</a>
+      <a href="#endpoints">Endpoints</a>
+      <a href="#docs">Docs</a>
+      <a href="https://github.com/Lu-Fi/timps/releases">Releases</a>
+      <a href="https://github.com/Lu-Fi/timps">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="hero">
+    <div class="hero-top">
+      <img class="badge" src="assets/timps-badge.png" alt="TIMPS - tiny imp streamer: an Ingenic chip mascot with a camera lens" width="498" height="561">
+      <div>
+        <h1>timps <span>tiny imp streamer</span></h1>
+    <p class="lead">A small <strong>RTSP / fragmented-MP4 / MJPEG / WebRTC / SRT</strong> streamer for
+      <strong>Ingenic SoC IP cameras</strong>. Pure C, built straight on <code>libimp</code>, with a live JSON
+      control API, native day/night and motion detection. One of the streamer choices in
+      <a href="https://github.com/themactep/thingino-firmware">thingino</a> firmware.</p>
+    <span class="pill">Newest release <b id="rel">v1.12.0</b> <span id="reldate">2026-11-07</span></span>
+    <div class="btns">
+      <a class="btn primary" href="https://github.com/Lu-Fi/timps/releases/latest">Download / release notes</a>
+      <a class="btn" href="https://github.com/Lu-Fi/timps/blob/main/docs/wiki/Home.md">Wiki</a>
+      <a class="btn" href="https://github.com/Lu-Fi/timps/blob/main/CHANGELOG.md">Changelog</a>
+    </div>
+      </div>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="n">9</div><div class="l">Ingenic SoCs: T10 to T41 and C100</div></div>
+      <div class="stat"><div class="n">2</div><div class="l">libimp stacks: the vendor one and <a href="https://lu-fi.github.io/openimp/">OpenIMP</a></div></div>
+      <div class="stat"><div class="n">~400 KB</div><div class="l">one binary, stripped, all options on (T31)</div></div>
+      <div class="stat"><div class="n">/control</div><div class="l">live JSON API with per-SoC capabilities</div></div>
+    </div>
+  </div>
+
+  <section id="features">
+    <h2>Features</h2>
+    <p class="sub">Everything a camera needs, in one small process.</p>
+    <div class="grid">
+      <div class="card"><h3>Streaming</h3><p>RTSP with H.264/H.265 and AAC/G.711, fragmented MP4 for the browser (MSE), JPEG snapshot and MJPEG. Optional RTSPS/HTTPS, MPEG-TS over SRT and WebRTC/WHEP.</p></div>
+      <div class="card"><h3>On-demand encoding</h3><p>A stream is encoded only while a client watches. The frame sources keep running by default, so exposure and day/night stay correct while nobody watches.</p></div>
+      <div class="card"><h3>Live control API</h3><p><code>GET/POST /control</code>: ISP image, encoder, OSD, audio, motion, day/night, changed live and persisted. <code>caps</code> says what this SoC and build support.</p></div>
+      <div class="card"><h3>Event stream</h3><p><code>GET /events</code> (SSE) pushes motion, day/night and stats events instead of polling.</p></div>
+      <div class="card"><h3>Day/night</h3><p>Native detection from the ISP exposure with short IR looks and day checks, or a fixed time window, or real sunrise and sunset. Replaces thingino's daynightd.</p></div>
+      <div class="card"><h3>Motion detection</h3><p>IMP_IVS grid with live per-cell state for a preview overlay and an <code>on_motion</code> hook.</p></div>
+      <div class="card"><h3>OSD and privacy</h3><p>Per-stream TrueType OSD with placeholders (time, hostname, fps...), outlines, logos, and privacy masks, all live.</p></div>
+      <div class="card"><h3>Recording</h3><p>Continuous or motion-triggered fMP4 segments to SD with pre/post-roll and pruning, plus JPEG timelapse.</p></div>
+      <div class="card"><h3>Audio both ways</h3><p>timps owns the speaker: ONVIF backchannel, browser microphone over WebSocket, and a system-sound play queue.</p></div>
+      <div class="card"><h3>ROI, crop and rotation</h3><p>Encoder ROI, ISP crop/zoom and 90/270 rotation where the SoC and libimp allow it, tiered per SoC in <code>caps</code>.</p></div>
+      <div class="card"><h3>Test pattern</h3><p>With OpenIMP: synthetic pictures, scripted moving objects scored against the motion detection, or the sensor's own pattern.</p></div>
+      <div class="card"><h3>Security</h3><p>RTSP Digest, HTTP Digest/Basic and a <code>/control</code> token with CORS.</p></div>
+    </div>
+  </section>
+
+  <section id="socs">
+    <h2>Supported SoCs</h2>
+    <p class="sub">One source tree, one <code>PLATFORM</code> switch. Features differ per SoC and libimp; the
+      <a href="https://github.com/Lu-Fi/timps/blob/main/docs/wiki/Platform-SDK-Support.md">capability matrix</a> has the details.</p>
+    <div class="socs">
+      <div class="soc"><span class="name">T10</span><div class="note">rotation with OpenIMP</div></div>
+      <div class="soc"><span class="name">T20</span><div class="note">rotation with OpenIMP, MBRC switch</div></div>
+      <div class="soc"><span class="name">T21</span><div class="note">rotation with OpenIMP</div></div>
+      <div class="soc"><span class="name">T23</span><div class="note">rotation with OpenIMP</div></div>
+      <div class="soc"><span class="name">T30</span><span class="tag">new in 1.12</span><div class="note">H.265, rotation, ROI with OpenIMP</div></div>
+      <div class="soc"><span class="name">T31</span><div class="note">rotation in libimp</div></div>
+      <div class="soc"><span class="name">T40</span><div class="note">I2D rotation, AE target and gain cap</div></div>
+      <div class="soc"><span class="name">T41</span><div class="note">I2D rotation incl. 180</div></div>
+      <div class="soc"><span class="name">C100</span><div class="note">vendor libimp</div></div>
+    </div>
+  </section>
+
+  <section id="new">
+    <h2>What's new in v1.12.0</h2>
+    <p class="sub">Released 2026-11-07. Full list in the <a href="https://github.com/Lu-Fi/timps/blob/main/CHANGELOG.md">changelog</a>.</p>
+    <div class="news">
+      <ul>
+        <li><strong>Full T30 support:</strong> rotation 90/270 for doorbells, H.265 and live rate control with OpenIMP, ISP keys (DPC, RawDRC, antifog, noise reduction) and encoder ROI.</li>
+        <li><strong>One rotation path:</strong> T10/T20/T21/T23/T30 rotate through OpenIMP's frame source; the old T23 software rotate is gone (a T23 <code>rotation = 90</code> now turns the other way).</li>
+        <li><strong>T40:</strong> <code>image.ae_compensation</code> and <code>image.max_again</code>, on the vendor and the OpenIMP libimp.</li>
+        <li><strong>Calmer dawns:</strong> day/night skips IR looks that cannot find day and judges a creeping light with what the last check measured: about half the morning IR looks and fewer failed day checks.</li>
+        <li><strong>Always-on frame sources:</strong> <code>general.fs_keepalive</code> defaults to 1, so exposure and day/night keep working while nobody watches.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="endpoints">
+    <h2>Endpoints</h2>
+    <p class="sub">Defaults; ports and paths are configurable.</p>
+    <div class="tbl">
+      <table>
+        <tr><th>URL</th><th>What</th></tr>
+        <tr><td><code>rtsp://&lt;ip&gt;:554/ch0</code></td><td>main stream, video and audio</td></tr>
+        <tr><td><code>rtsp://&lt;ip&gt;:554/ch1</code></td><td>sub stream</td></tr>
+        <tr><td><code>http://&lt;ip&gt;:8880/</code></td><td>browser preview (fMP4 over MSE, with audio)</td></tr>
+        <tr><td><code>http://&lt;ip&gt;:8880/stream.mp4</code></td><td>fragmented MP4 for ffplay / VLC</td></tr>
+        <tr><td><code>http://&lt;ip&gt;:8880/snapshot.jpg</code></td><td>latest JPEG</td></tr>
+        <tr><td><code>http://&lt;ip&gt;:8880/stream.mjpeg</code></td><td>MJPEG</td></tr>
+        <tr><td><code>http://&lt;ip&gt;:8880/control</code></td><td>live JSON control and status API</td></tr>
+        <tr><td><code>http://&lt;ip&gt;:8880/events</code></td><td>server-sent events: motion, day/night, stats</td></tr>
+        <tr><td><code>http://&lt;ip&gt;:8880/webrtc/whep</code></td><td>WebRTC (WHEP), H.264 and G.711</td></tr>
+        <tr><td><code>wss://&lt;ip&gt;:8880/talk</code></td><td>browser microphone to the camera speaker</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <section id="start" class="split">
+    <div>
+    <h2>Get it</h2>
+    <p class="sub">timps ships as a thingino package.</p>
+<pre>make menuconfig   # Streamer Packages -> Streamer -> timps
+make              # build the firmware, flash as usual</pre>
+    <p class="sub">Building by hand, every <code>USE_*</code> switch and the simulator: see
+      <a href="https://github.com/Lu-Fi/timps/blob/main/docs/wiki/Building.md">Building</a>.
+      For the open camera stack it runs on, see <a href="https://lu-fi.github.io/openimp/">OpenIMP</a>.</p>
+    </div>
+    <img class="mascot" src="assets/timps-mascot.png" alt="TIMPS mascot" width="502" height="620">
+  </section>
+
+  <section id="docs">
+    <h2>Documentation</h2>
+    <p class="sub">The wiki lives in the repository.</p>
+    <div class="docs">
+      <a href="https://github.com/Lu-Fi/timps/blob/main/docs/wiki/Home.md">Wiki home<span>start here</span></a>
+      <a href="https://github.com/Lu-Fi/timps/blob/main/docs/wiki/Configuration-Reference.md">Configuration<span>every timps.conf key</span></a>
+      <a href="https://github.com/Lu-Fi/timps/blob/main/docs/wiki/HTTP-Control-API.md">HTTP /control API<span>JSON API, caps, events</span></a>
+      <a href="https://github.com/Lu-Fi/timps/blob/main/docs/wiki/Streaming-Protocols.md">Streaming protocols<span>RTSP, fMP4, MJPEG, SRT</span></a>
+      <a href="https://github.com/Lu-Fi/timps/blob/main/docs/wiki/Day-Night.md">Day/night<span>how the switching decides</span></a>
+      <a href="https://github.com/Lu-Fi/timps/blob/main/docs/wiki/Platform-SDK-Support.md">Platform support<span>per-SoC capability matrix</span></a>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>timps, MIT licensed. Not affiliated with Ingenic.</span>
+    <span><a href="https://github.com/Lu-Fi/timps">GitHub</a> · <a href="https://github.com/Lu-Fi/timps/issues">Issues</a> · <a href="https://github.com/themactep/thingino-firmware">thingino</a> · <a href="https://lu-fi.github.io/openimp/">OpenIMP</a></span>
+  </div>
+</footer>
+<script>
+fetch("https://api.github.com/repos/Lu-Fi/timps/releases/latest")
+  .then(function (r) { return r.ok ? r.json() : null; })
+  .then(function (j) {
+    if (!j || !j.tag_name) return;
+    document.getElementById("rel").textContent = j.tag_name;
+    if (j.published_at) document.getElementById("reldate").textContent = j.published_at.slice(0, 10);
+  })
+  .catch(function () {});
+</script>
+</body>
+</html>
