@@ -14,8 +14,8 @@
  *   IMP_AI_EnableNs/DisableNs            -> all SoCs (T10 T20 T21 T23 T30
  *                                           T31 T40 T41 C100)
  *   IMP_AI_SetAlcGain (analog PGA gain)  -> T21 T31 C100 only
- * (IMP_AO_SetVol/SetGain exist everywhere too, but timps has no audio output
- * pipeline, so speaker keys are persist-only - see control.c/hal_ingenic.c.)
+ * The speaker side (IMP_AO: backchannel, play queue, spk_volume/spk_gain)
+ * is gated by USE_PLAY/USE_BACKCHANNEL, not here - see hal_ao_set_vol().
  *
  * NOT here on purpose: codec / samplerate / bitrate / channels / enabled are
  * IMP_AI_SetPubAttr- or encoder-init-time attributes, never live calls; they
