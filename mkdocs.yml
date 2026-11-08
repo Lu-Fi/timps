@@ -1,0 +1,71 @@
+# Docs site from docs/wiki, built by scripts/build-docs.sh into _site/docs
+site_name: timps docs
+site_description: Documentation of timps, the tiny imp streamer for Ingenic SoC IP cameras
+site_url: https://lu-fi.github.io/timps/docs/
+repo_url: https://github.com/Lu-Fi/timps
+repo_name: Lu-Fi/timps
+edit_uri: blob/main/docs/wiki/
+docs_dir: _docs
+site_dir: _site/docs
+
+theme:
+  name: material
+  logo: assets/timps-icon.png
+  favicon: assets/favicon-64.png
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+  font: false
+  features:
+    - navigation.top
+    - navigation.footer
+    - search.highlight
+    - search.suggest
+    - toc.follow
+    - content.code.copy
+
+markdown_extensions:
+  - tables
+  - admonition
+  - attr_list
+  - md_in_html
+  - footnotes
+  - def_list
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.details
+
+nav:
+  - Home: index.md
+  - Project page: https://lu-fi.github.io/timps/
+  - Architecture: Architecture.md
+  - Building: Building.md
+  - Configuration Reference: Configuration-Reference.md
+  - HTTP /control API: HTTP-Control-API.md
+  - Streaming Protocols: Streaming-Protocols.md
+  - Motion Detection: Motion-Detection.md
+  - Recording & Timelapse: Recording-Timelapse.md
+  - Rate Control and Bandwidth: Rate-Control-Bandwidth.md
+  - Rate Control Parameters: Rate-Control-Parameters.md
+  - Day/Night: Day-Night.md
+  - Day/Night Design Notes: Day-Night-Design-Notes.md
+  - Audio: Audio.md
+  - Platform & SDK Support: Platform-SDK-Support.md
+  - Testing / QA: Testing-QA.md
+  - Logging: Logging.md

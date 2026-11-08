@@ -1,4 +1,4 @@
-# Publishes site/ (the project page) with GitHub Pages.
+# Publishes site/ (the project page) and docs/wiki as /docs (mkdocs-material) with GitHub Pages.
 name: project page
 
 on:
@@ -6,6 +6,9 @@ on:
     branches: [main]
     paths:
       - 'site/**'
+      - 'docs/wiki/**'
+      - 'mkdocs.yml'
+      - 'scripts/build-docs.sh'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -24,9 +27,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install mkdocs==1.6.1 mkdocs-material==9.8.1
+      - run: NO_MKDOCS_2_WARNING=1 scripts/build-docs.sh
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site
+          path: _site
   deploy:
     needs: build
     runs-on: ubuntu-latest

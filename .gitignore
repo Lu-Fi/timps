@@ -35,3 +35,5 @@ docs/camera-fleet.md
 # privates Sub-Repo: Kamera-Inventar, Messreihen, alles mit Raum-/Personenbezug.
 # Eigenes Git darin; siehe private/README.md
 private/
+_site/
+_docs/

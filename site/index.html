@@ -112,7 +112,7 @@ footer .wrap { display: flex; gap: 16px; flex-wrap: wrap; justify-content: space
       <a href="#socs">SoCs</a>
       <a href="#new">What's new</a>
       <a href="#endpoints">Endpoints</a>
-      <a href="#docs">Docs</a>
+      <a href="docs/">Docs</a>
       <a href="https://github.com/Lu-Fi/timps/releases">Releases</a>
       <a href="https://github.com/Lu-Fi/timps">GitHub</a>
     </nav>
@@ -132,7 +132,7 @@ footer .wrap { display: flex; gap: 16px; flex-wrap: wrap; justify-content: space
     <span class="pill">Newest release <b id="rel">v1.12.0</b> <span id="reldate">2026-11-07</span></span>
     <div class="btns">
       <a class="btn primary" href="https://github.com/Lu-Fi/timps/releases/latest">Download / release notes</a>
-      <a class="btn" href="https://github.com/Lu-Fi/timps/blob/main/docs/wiki/Home.md">Wiki</a>
+      <a class="btn" href="docs/">Docs</a>
       <a class="btn" href="https://github.com/Lu-Fi/timps/blob/main/CHANGELOG.md">Changelog</a>
     </div>
       </div>
@@ -167,7 +167,7 @@ footer .wrap { display: flex; gap: 16px; flex-wrap: wrap; justify-content: space
   <section id="socs">
     <h2>Supported SoCs</h2>
     <p class="sub">One source tree, one <code>PLATFORM</code> switch. Features differ per SoC and libimp; the
-      <a href="https://github.com/Lu-Fi/timps/blob/main/docs/wiki/Platform-SDK-Support.md">capability matrix</a> has the details.</p>
+      <a href="docs/Platform-SDK-Support/">capability matrix</a> has the details.</p>
     <div class="socs">
       <div class="soc"><span class="name">T10</span><div class="note">rotation with OpenIMP</div></div>
       <div class="soc"><span class="name">T20</span><div class="note">rotation with OpenIMP, MBRC switch</div></div>
@@ -222,7 +222,7 @@ footer .wrap { display: flex; gap: 16px; flex-wrap: wrap; justify-content: space
 <pre>make menuconfig   # Streamer Packages -> Streamer -> timps
 make              # build the firmware, flash as usual</pre>
     <p class="sub">Building by hand, every <code>USE_*</code> switch and the simulator: see
-      <a href="https://github.com/Lu-Fi/timps/blob/main/docs/wiki/Building.md">Building</a>.
+      <a href="docs/Building/">Building</a>.
       For the open camera stack it runs on, see <a href="https://lu-fi.github.io/openimp/">OpenIMP</a>.</p>
     </div>
     <img class="mascot" src="assets/timps-mascot.png" alt="TIMPS mascot" width="502" height="620">
@@ -230,14 +230,14 @@ make              # build the firmware, flash as usual</pre>
 
   <section id="docs">
     <h2>Documentation</h2>
-    <p class="sub">The wiki lives in the repository.</p>
+    <p class="sub">Searchable, built from the wiki in the repository. <a href="docs/">Open the docs</a>.</p>
     <div class="docs">
-      <a href="https://github.com/Lu-Fi/timps/blob/main/docs/wiki/Home.md">Wiki home<span>start here</span></a>
-      <a href="https://github.com/Lu-Fi/timps/blob/main/docs/wiki/Configuration-Reference.md">Configuration<span>every timps.conf key</span></a>
-      <a href="https://github.com/Lu-Fi/timps/blob/main/docs/wiki/HTTP-Control-API.md">HTTP /control API<span>JSON API, caps, events</span></a>
-      <a href="https://github.com/Lu-Fi/timps/blob/main/docs/wiki/Streaming-Protocols.md">Streaming protocols<span>RTSP, fMP4, MJPEG, SRT</span></a>
-      <a href="https://github.com/Lu-Fi/timps/blob/main/docs/wiki/Day-Night.md">Day/night<span>how the switching decides</span></a>
-      <a href="https://github.com/Lu-Fi/timps/blob/main/docs/wiki/Platform-SDK-Support.md">Platform support<span>per-SoC capability matrix</span></a>
+      <a href="docs/">Wiki home<span>start here</span></a>
+      <a href="docs/Configuration-Reference/">Configuration<span>every timps.conf key</span></a>
+      <a href="docs/HTTP-Control-API/">HTTP /control API<span>JSON API, caps, events</span></a>
+      <a href="docs/Streaming-Protocols/">Streaming protocols<span>RTSP, fMP4, MJPEG, SRT</span></a>
+      <a href="docs/Day-Night/">Day/night<span>how the switching decides</span></a>
+      <a href="docs/Platform-SDK-Support/">Platform support<span>per-SoC capability matrix</span></a>
     </div>
   </section>
 </main>
