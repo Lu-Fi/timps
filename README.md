@@ -9,13 +9,17 @@ Built straight on the vendor **libimp** — no live555, libconfig, libwebsockets
 or libschrift. A lightweight alternative to prudynt / raptor for the
 [thingino](https://github.com/themactep/thingino-firmware) ecosystem.
 
+**[Project page](https://lu-fi.github.io/timps/)** · **[Docs (searchable)](https://lu-fi.github.io/timps/docs/)** · [Releases](https://github.com/Lu-Fi/timps/releases)
+
 </div>
 
 ---
 
 ## Documentation
 
-This README is a quick-start entry point. For the full reference —
+This README is a quick-start entry point. The wiki is also published as a
+searchable site at **[lu-fi.github.io/timps/docs](https://lu-fi.github.io/timps/docs/)**.
+For the full reference —
 architecture, every config key, the complete `/control` API, per-SoC
 capability matrix, testing — see the **[wiki](docs/wiki/Home.md)**:
 

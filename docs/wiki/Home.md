@@ -8,6 +8,9 @@ libwebsockets or libschrift — and is designed as a drop-in alternative to
 [thingino](https://github.com/themactep/thingino-firmware) firmware
 ecosystem.
 
+> Read it as a searchable site: **[lu-fi.github.io/timps/docs](https://lu-fi.github.io/timps/docs/)**.
+> Project page: **[lu-fi.github.io/timps](https://lu-fi.github.io/timps/)**.
+
 This wiki is a curated, evergreen reference for developers and operators. It
 is distinct from `docs/*.md` at the repository root, which are historical
 investigation notes, build-hardening logs and one-off code audits — those are
