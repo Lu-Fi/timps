@@ -8,6 +8,13 @@ semantic versioning.
 
 ### Fixed
 
+- Day/night: a colour look on a darker scene ("colour moved while the scene
+  got darker") now takes the same skip test as every other look and judges
+  with a fresh creep flag; before, it blinked the IR even when the lit level
+  was already above the bar, and could reuse the dawn bar of an earlier look
+  (fleet traces 2026-11-08/09: 23 pointless looks in one night). New replay
+  family `ext_ir_cycle`.
+
 - `image.running_mode` is no longer written to `/etc/timps.conf` while the
   automatic day/night engine runs (`daynight.enabled = 1`, `daynight.mode =
   auto`): the board script POSTs it on every switch, which rewrote the flash

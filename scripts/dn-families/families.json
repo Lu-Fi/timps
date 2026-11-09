@@ -4204,6 +4204,121 @@
     "max_wrong_mode_s": 3600,
     "max_switches": 10
    }
+  },
+  {
+   "name": "ext_ir_cycle",
+   "title": "an outside IR source goes on and off every 10 min all night (cam-sz 2026-11-08/09): the darker, recoloured scene must not blink a look each time",
+   "duration_s": 7200,
+   "initial_mode": "night",
+   "config": {
+    "daynight.day_gain": 3000,
+    "daynight.night_gain": 6000
+   },
+   "timelines": {
+    "sz": [
+     [
+      0,
+      "ext_ir_on"
+     ],
+     [
+      599,
+      "ext_ir_on"
+     ],
+     [
+      600,
+      "ext_ir_off"
+     ],
+     [
+      1199,
+      "ext_ir_off"
+     ],
+     [
+      1200,
+      "ext_ir_on"
+     ],
+     [
+      1799,
+      "ext_ir_on"
+     ],
+     [
+      1800,
+      "ext_ir_off"
+     ],
+     [
+      2399,
+      "ext_ir_off"
+     ],
+     [
+      2400,
+      "ext_ir_on"
+     ],
+     [
+      2999,
+      "ext_ir_on"
+     ],
+     [
+      3000,
+      "ext_ir_off"
+     ],
+     [
+      3599,
+      "ext_ir_off"
+     ],
+     [
+      3600,
+      "ext_ir_on"
+     ],
+     [
+      4199,
+      "ext_ir_on"
+     ],
+     [
+      4200,
+      "ext_ir_off"
+     ],
+     [
+      4799,
+      "ext_ir_off"
+     ],
+     [
+      4800,
+      "ext_ir_on"
+     ],
+     [
+      5399,
+      "ext_ir_on"
+     ],
+     [
+      5400,
+      "ext_ir_off"
+     ],
+     [
+      5999,
+      "ext_ir_off"
+     ],
+     [
+      6000,
+      "ext_ir_on"
+     ],
+     [
+      6599,
+      "ext_ir_on"
+     ],
+     [
+      6600,
+      "ext_ir_off"
+     ],
+     [
+      7199,
+      "ext_ir_off"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 60,
+    "max_switches": 2,
+    "max_ir_probes": 8
+   }
   }
  ]
 }

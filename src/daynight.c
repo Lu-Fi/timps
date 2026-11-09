@@ -1583,7 +1583,13 @@ static void *dn_thread(void *arg)
                     B = -1.0f;              /* new light: judge it by day_gain */
                     c_next = now + c_gap;
                     c_gap = c_gap * 2 < SD_LOOK_S * 1000LL ? c_gap * 2 : SD_LOOK_S * 1000LL;
-                    why = "color"; g_probe_req = 0;
+                    why = "color"; g_probe_req = 0; creep = 0;
+                    if (s * SD_SKIP >= (ubar = sd_look_bar(dn, why, B, K, F, Fn, Kf, now - Kf_at, Nf, creep))) {
+                        LOGD(MOD, "look (%s) skipped: lit %.0f, bar %.0f", why, (double)s, (double)ubar);
+                        a_by = 0; hold = 0; look_at = now + look_ms;
+                        Crg = Prg = -1.0f; chold = 0; cdev = -1.0f; c_from = now;
+                        break;
+                    }
                     goto look;
                 }
                 Crg = Prg = -1.0f; chold = 0; c_from = now;
