@@ -617,6 +617,13 @@ static void timps_apply_setting(ctrl_scratch_t *sc, ctrl_changes *ch, const char
      * this is just the raw settings echo, for everything else too. */
     events_config_push(key, out);
     sc->chg++;
+    /* the auto engine re-derives the mode at every boot: writing each
+     * switch to flash only made a restart start from the last guess */
+    if (!strcmp(key,"image.running_mode") && g_cfg.daynight.enabled &&
+        g_cfg.daynight.mode == DN_MODE_AUTO){
+        LOGI(MOD,"set %s = %s (auto day/night: not persisted)", key, out);
+        return;
+    }
     if (ch->n < CTRL_MAX_CHG){
         snprintf(ch->key[ch->n], sizeof ch->key[0], "%s", key);
         snprintf(ch->val[ch->n], sizeof ch->val[0], "%s", out);

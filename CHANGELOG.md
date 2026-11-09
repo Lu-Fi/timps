@@ -6,6 +6,15 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- `image.running_mode` is no longer written to `/etc/timps.conf` while the
+  automatic day/night engine runs (`daynight.enabled = 1`, `daynight.mode =
+  auto`): the board script POSTs it on every switch, which rewrote the flash
+  each time and made a restart start from the last mode. It still applies
+  live; with a schedule or day/night off it persists as before
+  (Lu-Fi/openimp#249).
+
 ## [1.12.1] - 2026-11-08
 
 ### Added
