@@ -43,26 +43,14 @@ path** — the board script is expected to drive the physical IR-cut
 filter and IR LEDs, and then call back into timps's own `/control` to set
 `image.running_mode`, closing the loop:
 
-```
-dn_thread decides day/night
-        │
-        ▼
-vfork()+execlp(switch_cmd, "day"|"night")   (e.g. thingino's `daynight` script)
-        │
-        ▼
-board script: flips IR-cut filter + IR LEDs, then...
-        │
-        ▼
-POST /control {"image":{"running_mode":0|1}}   ("the color hook")
-        │
-        ▼
-control.c: timps_apply_setting("image.running_mode", ...)
-        │
-        ▼
-hal_ingenic.c: IMP_ISP_Tuning_SetISPRunningMode(...)
-        │
-        ▼
-fs_kick_chn0()   (see below)
+```mermaid
+flowchart TB
+  a["dn_thread decides day/night"] --> b["vfork()+execlp(switch_cmd, day | night)<br/>e.g. thingino's daynight script"]
+  b --> c["board script flips the IR-cut filter and the IR LEDs, then"]
+  c --> d["POST /control #123;#quot;image#quot;:#123;#quot;running_mode#quot;:0 | 1#125;#125;<br/>(the colour hook)"]
+  d --> e["control.c: timps_apply_setting(#quot;image.running_mode#quot;, ...)"]
+  e --> f["hal_ingenic.c: IMP_ISP_Tuning_SetISPRunningMode(...)"]
+  f --> g["fs_kick_chn0() (see below)"]
 ```
 
 This indirection keeps the whole board in sync: the same script that

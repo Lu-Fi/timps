@@ -10,30 +10,17 @@ while at least one subscriber is attached to a given source — this
 on-demand model is central to the design and shows up throughout the
 codebase as `hub_active()`/`fs_use()`/`fs_unuse()` refcounting.
 
-```
-        ┌───────────┐      ┌────────────────────┐      ┌───────────────┐
-sensor →│  ISP/AE/AWB│ →   │ FrameSource (fs_use)│ →   │  Encoder(s)    │
-        └───────────┘      └────────────────────┘      │ (H.264/H.265/  │
-                                    │                    │  JPEG piggy-  │
-                                    ▼                    │  back)         │
-                              ┌───────────┐              └───────┬───────┘
-                              │  OSD/IVS  │                      │
-                              │ (overlay, │                      ▼
-                              │  motion)  │              ┌───────────────┐
-                              └───────────┘              │  hub_publish  │
-                                                          │ (hub.c)       │
-                                                          └───────┬───────┘
-                                                                  │ fan-out
-                        ┌─────────────────────────────────────────┼──────────────────────┐
-                        ▼                     ▼                   ▼                      ▼
-                 ┌─────────────┐      ┌──────────────┐    ┌─────────────┐        ┌─────────────┐
-                 │ RTSP server │      │ HTTP server  │    │ SRT (MPEG-TS)│        │ record.c /   │
-                 │ (rtsp.c)    │      │ (httpd.c):   │    │ (srt.c)      │        │ timelapse.c  │
-                 │ RTP/RTCP    │      │ fMP4/MJPEG/  │    │              │        │ (SD storage) │
-                 └─────────────┘      │ snapshot/    │    └─────────────┘        └─────────────┘
-                                      │ control/     │
-                                      │ events       │
-                                      └──────────────┘
+```mermaid
+flowchart TB
+  sensor([sensor]) --> isp["ISP / AE / AWB"]
+  isp --> fs["FrameSource<br/>(fs_use)"]
+  fs --> osd["OSD / IVS<br/>(overlay, motion)"]
+  fs --> enc["Encoder(s)<br/>H.264 / H.265, JPEG piggy-back"]
+  enc --> hub["hub_publish<br/>(hub.c)"]
+  hub -- fan-out --> rtsp["RTSP server<br/>(rtsp.c), RTP/RTCP"]
+  hub -- fan-out --> http["HTTP server (httpd.c)<br/>fMP4, MJPEG, snapshot,<br/>/control, events"]
+  hub -- fan-out --> srt["SRT, MPEG-TS<br/>(srt.c)"]
+  hub -- fan-out --> rec["record.c / timelapse.c<br/>(SD storage)"]
 ```
 
 Audio capture flows through the same hub (a dedicated audio source index)
