@@ -5470,6 +5470,11 @@ static int ing_control(const char *key, const char *val)
         if (ok && !strcmp(k,"running_mode")){
             isp_apply_image("hflip");
             isp_apply_image("vflip");
+            /* the driver reloads the sensor bin's gain caps on a mode switch
+             * (Lu-Fi/openimp#254); defaults are left to the bin */
+            const ms_image_cfg *im = &g_hcfg->image;
+            if (im->max_again != 160) isp_apply_image("max_again");
+            if (im->max_dgain != 80)  isp_apply_image("max_dgain");
 #ifdef AE_IT_SUPERVISE
             /* a real day/night switch may change the sensor mode under the AE
              * cap: its uncapped reference goes stale and the supervisor is

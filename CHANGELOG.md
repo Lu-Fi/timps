@@ -22,6 +22,12 @@ semantic versioning.
   live; with a schedule or day/night off it persists as before
   (Lu-Fi/openimp#249).
 
+- A non-default `image.max_again` / `image.max_dgain` survives a day/night
+  switch: the ISP driver reloads the sensor bin's gain caps on every
+  running-mode change, so after the first switch the configured cap was
+  silently gone. It is re-applied after each switch; the defaults (160 / 80)
+  still leave the bin's caps in force (Lu-Fi/openimp#254).
+
 ## [1.12.1] - 2026-11-08
 
 ### Added
