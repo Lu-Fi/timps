@@ -1137,6 +1137,7 @@ brings it back.
 | `switching to day\|night (<why>): <cmd> …` | I | The board drive; the tail is machine-readable. |
 | `daynight.day_gain A is above night_gain B - swapped` | W | `day_gain` must be the lower number. |
 | `ISP did not follow the switch to <mode> - one cycle` | W | The ISP latched; one real edge through the other mode. A restart cures a permanent latch. |
+| `ISP is in <mode> while auto day/night stands on <mode> - switching back (daynight.enabled = 0 to switch by hand)` | W | **Unreleased.** Something outside timps (a hand-run `daynight day`/`night`) switched the ISP while auto runs; after 10 s timps switches back once. Switch by hand only with `daynight.enabled = 0`. |
 | `no exposure reading from <path> - detection idle` | W | Check `daynight.isp_path`. |
 | `boot: no exposure reading - asserting the persisted <mode>` | W | No measurement at boot; the persisted mode is asserted once. |
 | `'<cmd> <arg>' failed (rc=…) - is the script installed?` | W | `daynight.switch_cmd` missing. **Without it the IR-cut filter never moves.** |
@@ -2956,6 +2957,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `look (%s) skipped: lit %.0f, bar %.0f` | D | **Since v1.12.0.** A look that could not find day, not run (§3.3). |
 | `check (%s): day, exposure %.0f < %.0f` / `check (%s): night, exposure %.0f` | I | The day pipeline's verdict; the exposure is what `day_gain` is compared with. |
 | `ISP did not follow the switch to %s - one cycle` | W | The ISP latch; one real transition. §3.4 |
+| `ISP is in %s while auto day/night stands on %s - switching back (daynight.enabled = 0 to switch by hand)` | W | **Unreleased.** A standing ISP desync (hand-run board script) re-switched once after 10 s. |
 | `boot: no exposure reading - asserting the persisted %s` | W | No measurement at boot. |
 | `'%s %s' failed (rc=%d) - is the script installed?` | W | `daynight.switch_cmd` missing. **Without it the IR-cut filter never moves.** §11.2 |
 | `'%s %s' failed (rc=%d)` | W | `daynight.irprobe_cmd` missing/failing; two in a row turn looks off. |

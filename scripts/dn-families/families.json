@@ -4319,6 +4319,34 @@
     "max_switches": 2,
     "max_ir_probes": 8
    }
+  },
+  {
+   "name": "hand_switch",
+   "title": "the board script run by hand to day while auto stands on night in the dark",
+   "duration_s": 1200,
+   "initial_mode": "night",
+   "isp_manual": [
+    [
+     500,
+     "day"
+    ]
+   ],
+   "timelines": {
+    "pan": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      1200,
+      "dark"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 60,
+    "max_switches": 3
+   }
   }
  ]
 }

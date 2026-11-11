@@ -28,6 +28,13 @@ semantic versioning.
   silently gone. It is re-applied after each switch; the defaults (160 / 80)
   still leave the bin's caps in force (Lu-Fi/openimp#254).
 
+- Day/night (auto): a standing ISP desync - the board script run by hand
+  (`daynight day` while timps stands on night) - is switched back once after
+  10 s. Before, `isp_desync = 1` was only reported, and the next look turned
+  the IR LED back on into the colour pipeline. Switch by hand with
+  `daynight.enabled = 0`. New replay family `hand_switch` (cam .21,
+  2026-11-10).
+
 ## [1.12.1] - 2026-11-08
 
 ### Added

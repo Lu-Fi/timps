@@ -127,6 +127,11 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
                                   over isp_sticky while active; like sticky,
                                   the mode assertions judge the rendered
                                   timeline.
+  isp_manual                    - OPTIONAL [[t, "day"|"night"], ...]: the
+                                  board script run by hand at t (cam .21
+                                  2026-11-10): the ISP renders that mode until
+                                  the daemon's next switch; mode assertions
+                                  judge the rendered timeline.
   night_gain_noir               - OPTIONAL [[t, gain], ...]: the NIGHT pipeline
                                   with the IR illuminator switched OFF. This is
                                   the third optical state the 2026-08-17
@@ -1250,6 +1255,7 @@ def run_regression(scn, binary, keep=False, scale_override=None):
     day_lag = float(scn.get("day_lag_s", 0))
     last_night_g = None
     override = scn.get("isp_override")       # [[t, "day"|"night"|null], ...]
+    manual = scn.get("isp_manual")           # [[t, "day"|"night"], ...]
 
     def override_at(t):
         v = None
@@ -1274,6 +1280,10 @@ def run_regression(scn, binary, keep=False, scale_override=None):
         ov = override_at(sim.vnow())
         if ov:
             return ov                        # forced from outside
+        now = sim.vnow()
+        hand = [x for x in (manual or []) if x[0] <= now]
+        if hand and not any(st > hand[-1][0] for st, _ in sim.switches()):
+            return hand[-1][1]
         if not sticky:
             return sim.cur_mode()
         stuck = sticky["stuck"]
@@ -1360,7 +1370,7 @@ def run_regression(scn, binary, keep=False, scale_override=None):
 
         switches = sim.switches()
         irdrives = [p for p in sim.ir_probes() if p[1] == "off"]
-        if sticky or override:
+        if sticky or override or manual:
             # judge what the ISP RENDERED (the fed history), not what was
             # commanded - a stuck ISP is precisely where the two differ
             segs, start, curm = [], 0.0, scn["initial_mode"]

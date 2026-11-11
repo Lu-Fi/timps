@@ -78,6 +78,7 @@ static int dn_mag_min(int mag, int other)
 #define DN_REASSERT_MS    8000
 #define DN_REASSERT_COUNT 2
 #define DN_CYCLE_HOLD_MS  5000   /* the other mode of a readback cycle, held */
+#define DN_DESYNC_MS      10000  /* a standing ISP desync this long is re-switched, once */
 #ifndef DN_VERIFY_MS
 #define DN_VERIFY_MS 18000
 #endif
@@ -1373,7 +1374,8 @@ static void *dn_thread(void *arg)
     int     creep = 0;
     int64_t boot_at = ms_now_us() / 1000, due = 0, hold = 0, look_at = 0;
     int64_t day_at = 0, mode_at = 0, N_at = 0, verify_at = 0, quiet = 0, idle_at = 0;
-    int64_t reassert_at = 0, cycle_at = 0, rise = 0, a_by = 0;
+    int64_t reassert_at = 0, cycle_at = 0, rise = 0, a_by = 0, ds_at = 0;
+    int     ds_done = 0;
     int     reassert_left = 0;
     int64_t lock_until = 0, lock_ms = SD_LOCK_MS;  /* failed checks: 1, 2, 4 ... 16 min */
     const char *why = "boot";
@@ -1494,8 +1496,26 @@ static void *dn_thread(void *arg)
                 goto out;
             }
         }
-        desync = (!verify_at && sm.isp >= 0 && cur >= 0 && sm.isp != cur);
+        int off = sm.isp >= 0 && cur >= 0 && sm.isp != cur;
+        desync = off && !verify_at;
         if (cycled && sm.isp == cur) cycled = 0;
+        /* a hand-run board script while auto runs: the next look would light
+         * the IR into the day pipeline (cam .21 2026-11-10) */
+        if (!off) ds_at = ds_done = 0;
+        else if (desync && !ds_done && st != S_LOOK) {
+            if (!ds_at) ds_at = now;
+            else if (now - ds_at >= DN_DESYNC_MS) {
+                ds_done = 1;
+                LOGW(MOD, "ISP is in %s while auto day/night stands on %s - switching "
+                     "back (daynight.enabled = 0 to switch by hand)",
+                     sm.isp == DN_NIGHT ? "night" : "day", cur == DN_NIGHT ? "night" : "day");
+                dn_switch(cur, "isp desync", dn->switch_cmd, s, A, B);
+                s = -1.0f; stable = 0;
+                verify_at = now + DN_VERIFY_MS;
+                reassert_left = DN_REASSERT_COUNT; reassert_at = now + DN_REASSERT_MS;
+                goto out;
+            }
+        }
 
         if (sm.d <= 0.0f) {
             static int said;
@@ -1536,7 +1556,7 @@ static void *dn_thread(void *arg)
             } else hold = 0;
             break;
         case S_NIGHT: {
-            if (cycled) break;
+            if (cycled || (ds_at && !ds_done)) break;
             int jump = 0;
             float jb = irp ? 1.0f - (float)dn->jump_pct / 100.0f : SD_JUMP_CHECK;
             /* a lamp lit within the settle after a look or a check is no
