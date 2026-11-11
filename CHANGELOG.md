@@ -20,7 +20,9 @@ semantic versioning.
   auto`): the board script POSTs it on every switch, which rewrote the flash
   each time and made a restart start from the last mode. It still applies
   live; with a schedule or day/night off it persists as before
-  (Lu-Fi/openimp#249).
+  (Lu-Fi/openimp#249). Switching auto off (`daynight.enabled = 0` or
+  `daynight.mode = schedule`) writes the current mode to the file, and a
+  build without day/night persists it always.
 
 - A non-default `image.max_again` / `image.max_dgain` survives a day/night
   switch: the ISP driver reloads the sensor bin's gain caps on every
