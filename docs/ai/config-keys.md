@@ -1243,10 +1243,11 @@ to `total_gain`.
   v1.11.0** when the lit picture's colour moves `color_pct` from the last look
   for 20 s (a weak lamp; at most every 5 min, doubling), **since v1.12.0**
   near the bar (`look (near)`, below), and on
-  `{"daynight":{"probe":1}}`. A lit level that rises 10 % above the
-  reference and does not fall back below it for 60 s (the light of the last
-  look has gone) becomes the reference, and the next look relearns the scene
-  bar. **Since v1.11.0** a look taken while the lit level was still moving (a
+  `{"daynight":{"probe":1}}`. A lit level that stays more than 10 % above
+  the reference for 60 s (the light of the last look has gone) becomes the
+  reference, and the next look relearns the scene bar (**unreleased**:
+  before, it only had to stay above the reference itself once it had
+  crossed the 10 % line, Lu-Fi/openimp#358). **Since v1.11.0** a look taken while the lit level was still moving (a
   lamp coming on, another camera's look; a 20 s jump excepted) sets no
   reference: the next settled level does, within 60 s. The colour reference
   is retaken 8 s after every look with the AE settled; no colour look runs

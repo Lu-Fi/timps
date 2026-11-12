@@ -37,6 +37,13 @@ semantic versioning.
   `daynight.enabled = 0`. New replay family `hand_switch` (cam .21,
   2026-11-10).
 
+- Day/night (auto): the night reference follows a darker scene only when the
+  level stays over 1.1 x the reference for 60 s. Before, one stretch over
+  that line kept the timer running at 1.0-1.1 x, the reference moved and
+  the learned day bar was lost, so a weak lamp's colour look only learned
+  and the camera stayed in night (T10, 5000 K lamps, Lu-Fi/openimp#358).
+  New replay family `lamp_after_wobble`.
+
 ## [1.12.1] - 2026-11-08
 
 ### Added

@@ -4347,6 +4347,55 @@
     "max_wrong_mode_s": 60,
     "max_switches": 3
    }
+  },
+  {
+   "name": "lamp_after_wobble",
+   "title": "the level over the reference line for 30 s, then 4 % above it; a weak lamp: day within a minute",
+   "duration_s": 2400,
+   "initial_mode": "night",
+   "timelines": {
+    "pan": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      300,
+      "dark"
+     ],
+     [
+      301,
+      "dark_spk"
+     ],
+     [
+      330,
+      "dark_spk"
+     ],
+     [
+      331,
+      "dark_hi"
+     ],
+     [
+      900,
+      "dark_hi"
+     ],
+     [
+      901,
+      "lamp"
+     ],
+     [
+      2400,
+      "lamp"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 60,
+    "max_switches": 4,
+    "forbid_log": [
+     "reference follows the darker scene"
+    ]
+   }
   }
  ]
 }

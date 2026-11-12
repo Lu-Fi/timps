@@ -1587,9 +1587,11 @@ static void *dn_thread(void *arg)
             if (Kf > 0.0f && Lf > 0.0f && s > Lf * SD_KF_GONE) Kf = -1.0f;
             /* the light A (and B) were taken under is gone: else a lamp
              * would have to beat that light, and B would still judge for it */
+            /* one AE sample over the line after a look kept it running
+             * at 1.07 x A and cost B (Lu-Fi/openimp#358) */
             if (A > 0.0f && s > A * SD_RISE) {
                 if (!rise) rise = now;
-            } else if (s < A) rise = 0;
+            } else rise = 0;
             if (rise && now - rise >= SD_RISE_MS) {
                 LOGD(MOD, "reference follows the darker scene: %.0f -> %.0f",
                      (double)A, (double)s);

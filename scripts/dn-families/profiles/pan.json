@@ -172,6 +172,20 @@
    "lit": 60,
    "dark": 37,
    "src": "device test 2026-10-12 (Pan, 100 % bulb): look dark 37, check 65; lit ASSUMED"
+  },
+  "dark_spk": {
+   "day": 3587,
+   "lit": 300,
+   "dark": 823,
+   "railed": true,
+   "src": "openimp#358: the level over 1.1 x the reference for a while (T10 .31 2026-11-12: 45 -> 48 adopted, B lost)"
+  },
+  "dark_hi": {
+   "day": 3587,
+   "lit": 262,
+   "dark": 823,
+   "railed": true,
+   "src": "openimp#358: the level after it, 1.04 x the reference"
   }
  },
  "color": {
