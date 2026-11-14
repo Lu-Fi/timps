@@ -186,6 +186,13 @@
    "dark": 823,
    "railed": true,
    "src": "openimp#358: the level after it, 1.04 x the reference"
+  },
+  "dark_112": {
+   "day": 3587,
+   "lit": 279,
+   "dark": 823,
+   "railed": true,
+   "src": "review 2026-11-14: a darker scene about 1.11 x the reference, AE noise around the 1.1 line"
   }
  },
  "color": {

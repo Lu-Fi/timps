@@ -27,22 +27,39 @@ semantic versioning.
 - A non-default `image.max_again` / `image.max_dgain` survives a day/night
   switch: the ISP driver reloads the sensor bin's gain caps on every
   running-mode change, so after the first switch the configured cap was
-  silently gone. It is re-applied after each switch; the defaults (160 / 80)
-  still leave the bin's caps in force (Lu-Fi/openimp#254).
+  silently gone. It is re-applied after each switch, and again from the
+  frame path once chn0 delivers, since the mode can latch frames after the
+  Set (also after a chn0 enable edge); the defaults (160 / 80) still leave
+  the bin's caps in force (Lu-Fi/openimp#254, #4). On T40 the
+  `max_again` log line is written only when the ceiling changes (#13).
 
 - Day/night (auto): a standing ISP desync - the board script run by hand
   (`daynight day` while timps stands on night) - is switched back once after
   10 s. Before, `isp_desync = 1` was only reported, and the next look turned
   the IR LED back on into the colour pipeline. Switch by hand with
   `daynight.enabled = 0`. New replay family `hand_switch` (cam .21,
-  2026-11-10).
+  2026-11-10). It also works in Idle-Dark (which it leaves), not after a
+  failed readback cycle, re-arms only on a readback that matches, and
+  starts the darker-scene, jump and colour timers afresh (#6, replay
+  family `hand_switch_idle`).
 
 - Day/night (auto): the night reference follows a darker scene only when the
-  level stays over 1.1 x the reference for 60 s. Before, one stretch over
-  that line kept the timer running at 1.0-1.1 x, the reference moved and
-  the learned day bar was lost, so a weak lamp's colour look only learned
-  and the camera stayed in night (T10, 5000 K lamps, Lu-Fi/openimp#358).
-  New replay family `lamp_after_wobble`.
+  level stays over 1.1 x the reference for 60 s; 3 readings in a row under
+  that line (or one under the reference) end the timer. Before, one stretch
+  over the line kept the timer running at 1.0-1.1 x, the reference moved
+  and the learned day bar was lost, so a weak lamp's colour look only
+  learned and the camera stayed in night (T10, 5000 K lamps,
+  Lu-Fi/openimp#358, #11). New replay families `lamp_after_wobble`,
+  `darker_noisy`.
+
+- Day/night: a look requested with `{"daynight":{"probe":1}}` is no longer
+  dropped when a jump or colour look in the same tick is skipped; the
+  colour look on a darker scene goes through the same single skip test
+  (#7, #13).
+
+- Day/night: the boot fallback without any exposure reading now logs
+  `asserting <mode> (image.running_mode in the file)`; in auto that file
+  value is the last mode set outside auto (#12).
 
 ## [1.12.1] - 2026-11-08
 

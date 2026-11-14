@@ -128,7 +128,7 @@ def build(fam, pname, prof, day_gain, night_gain):
            "duration_s": fam["duration_s"],
            "initial_mode": fam.get("initial_mode", "night"),
            "config": dict(fam.get("config", {})), "interp": "step",
-           "noise_pct": 0, "day_gain": dg, "night_gain": ng, "expect": exp}
+           "noise_pct": fam.get("noise_pct", 0), "day_gain": dg, "night_gain": ng, "expect": exp}
     scn["config"].setdefault("daynight.day_gain", day_gain)
     scn["config"].setdefault("daynight.night_gain", night_gain)
     if fam.get("led", True):

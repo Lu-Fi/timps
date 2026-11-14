@@ -1245,7 +1245,8 @@ to `total_gain`.
   near the bar (`look (near)`, below), and on
   `{"daynight":{"probe":1}}`. A lit level that stays more than 10 % above
   the reference for 60 s (the light of the last look has gone) becomes the
-  reference, and the next look relearns the scene bar (**unreleased**:
+  reference, and the next look relearns the scene bar; 3 readings in a row
+  under that line, or one under the reference, end the 60 s (**unreleased**:
   before, it only had to stay above the reference itself once it had
   crossed the 10 % line, Lu-Fi/openimp#358). **Since v1.11.0** a look taken while the lit level was still moving (a
   lamp coming on, another camera's look; a 20 s jump excepted) sets no

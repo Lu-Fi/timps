@@ -1206,6 +1206,7 @@ enum { S_BOOT = -1, S_DAY = 0, S_NIGHT = 1, S_LOOK = 2, S_CHECK = 3 };
 #define SD_PAIR_MS    60000     /* a look and the check it asked for */
 #define SD_REF_MAX_MS 60000     /* an unsettled scene after a look: A by then */
 #define SD_RISE_MS    60000     /* a darker scene held this long is the new reference */
+#define SD_RISE_LOW_N 3         /* ... and this many readings in a row under the line end it */
 #define SD_RISE       1.10f     /* ... starting this far above it (noise stays below) */
 #define SD_B_MIN      0.50f     /* a light that halves the dark reading may ask again */
 #define SD_NEAR       4.0f      /* a look asks only where k puts the check this near day_gain */
@@ -1375,7 +1376,7 @@ static void *dn_thread(void *arg)
     int64_t boot_at = ms_now_us() / 1000, due = 0, hold = 0, look_at = 0;
     int64_t day_at = 0, mode_at = 0, N_at = 0, verify_at = 0, quiet = 0, idle_at = 0;
     int64_t reassert_at = 0, cycle_at = 0, rise = 0, a_by = 0, ds_at = 0;
-    int     ds_done = 0;
+    int     ds_done = 0, rlow = 0;
     int     reassert_left = 0;
     int64_t lock_until = 0, lock_ms = SD_LOCK_MS;  /* failed checks: 1, 2, 4 ... 16 min */
     const char *why = "boot";
@@ -1501,8 +1502,9 @@ static void *dn_thread(void *arg)
         if (cycled && sm.isp == cur) cycled = 0;
         /* a hand-run board script while auto runs: the next look would light
          * the IR into the day pipeline (cam .21 2026-11-10) */
-        if (!off) ds_at = ds_done = 0;
-        else if (desync && !ds_done && st != S_LOOK) {
+        if (sm.isp == cur) ds_at = ds_done = 0;
+        else if (!desync || ds_done || cycled || (st == S_LOOK && !idle)) ds_at = 0;
+        else {
             if (!ds_at) ds_at = now;
             else if (now - ds_at >= DN_DESYNC_MS) {
                 ds_done = 1;
@@ -1510,7 +1512,12 @@ static void *dn_thread(void *arg)
                      "back (daynight.enabled = 0 to switch by hand)",
                      sm.isp == DN_NIGHT ? "night" : "day", cur == DN_NIGHT ? "night" : "day");
                 dn_switch(cur, "isp desync", dn->switch_cmd, s, A, B);
+                if (idle) {                 /* the board script lit the IR */
+                    idle = 0; quiet = 0; sd_arm(0);
+                    st = S_NIGHT; A = L; look_at = now + look_ms;
+                }
                 s = -1.0f; stable = 0;
+                hold = rise = rlow = 0; chold = 0; Crg = Prg = -1.0f; cdev = -1.0f; c_from = now;
                 verify_at = now + DN_VERIFY_MS;
                 reassert_left = DN_REASSERT_COUNT; reassert_at = now + DN_REASSERT_MS;
                 goto out;
@@ -1523,8 +1530,9 @@ static void *dn_thread(void *arg)
                 LOGW(MOD, "no exposure reading from %s - detection idle", dn->isp_path);
             if (st == S_BOOT && now - boot_at >= DN_STABLE_MAX_MS) {
                 cur = st = rm ? DN_NIGHT : DN_DAY;
-                LOGW(MOD, "boot: no exposure reading - asserting the persisted %s",
-                     cur == DN_NIGHT ? "night" : "day");
+                /* in auto the file holds the last mode set outside auto (#249) */
+                LOGW(MOD, "boot: no exposure reading - asserting %s (image.running_mode "
+                     "in the file)", cur == DN_NIGHT ? "night" : "day");
                 dn_switch(cur, "boot fallback", dn->switch_cmd, -1, -1, -1);
                 mode_at = now;
             }
@@ -1557,7 +1565,7 @@ static void *dn_thread(void *arg)
             break;
         case S_NIGHT: {
             if (cycled || (ds_at && !ds_done)) break;
-            int jump = 0;
+            int jump = 0, cdk = 0;
             float jb = irp ? 1.0f - (float)dn->jump_pct / 100.0f : SD_JUMP_CHECK;
             /* a lamp lit within the settle after a look or a check is no
              * reference: the level before them is, so the lamp jumps */
@@ -1587,11 +1595,12 @@ static void *dn_thread(void *arg)
             if (Kf > 0.0f && Lf > 0.0f && s > Lf * SD_KF_GONE) Kf = -1.0f;
             /* the light A (and B) were taken under is gone: else a lamp
              * would have to beat that light, and B would still judge for it */
-            /* one AE sample over the line after a look kept it running
-             * at 1.07 x A and cost B (Lu-Fi/openimp#358) */
+            /* under the line it ends: 1.07 x A kept it running and cost B
+             * (Lu-Fi/openimp#358); a lone noisy reading does not */
             if (A > 0.0f && s > A * SD_RISE) {
                 if (!rise) rise = now;
-            } else rise = 0;
+                rlow = 0;
+            } else if (!rise || s < A || ++rlow >= SD_RISE_LOW_N) rise = rlow = 0;
             if (rise && now - rise >= SD_RISE_MS) {
                 LOGD(MOD, "reference follows the darker scene: %.0f -> %.0f",
                      (double)A, (double)s);
@@ -1603,16 +1612,7 @@ static void *dn_thread(void *arg)
                     now - chold >= SD_JUMP_HOLD_MS && !locked && now >= c_next) {
                     LOGD(MOD, "colour moved %.1f %% while the scene got darker", (double)cdev);
                     B = -1.0f;              /* new light: judge it by day_gain */
-                    c_next = now + c_gap;
-                    c_gap = c_gap * 2 < SD_LOOK_S * 1000LL ? c_gap * 2 : SD_LOOK_S * 1000LL;
-                    why = "color"; g_probe_req = 0; creep = 0;
-                    if (s * SD_SKIP >= (ubar = sd_look_bar(dn, why, B, K, F, Fn, Kf, now - Kf_at, Nf, creep))) {
-                        LOGD(MOD, "look (%s) skipped: lit %.0f, bar %.0f", why, (double)s, (double)ubar);
-                        a_by = 0; hold = 0; look_at = now + look_ms;
-                        Crg = Prg = -1.0f; chold = 0; cdev = -1.0f; c_from = now;
-                        break;
-                    }
-                    goto look;
+                    cdk = 1;
                 }
                 Crg = Prg = -1.0f; chold = 0; c_from = now;
             }
@@ -1641,7 +1641,7 @@ static void *dn_thread(void *arg)
             else if (!quiet) quiet = now;
             if (irp && dn->ir_idle_off && hal_fs_keepalive() && quiet &&
                 now - quiet >= (int64_t)dn->ir_idle_linger_s * 1000 &&
-                g_dni_hook == DNI_HOOK_OK && !g_probe_req &&
+                g_dni_hook == DNI_HOOK_OK && !g_probe_req && !cdk &&
                 dn_idle_hook(dn->irprobe_cmd, &idle_fails) == 0) {
                 __atomic_store_n(&g_watch_kick, 0, __ATOMIC_RELAXED);
                 sd_arm(1);
@@ -1651,19 +1651,22 @@ static void *dn_thread(void *arg)
             }
             /* a jump waits out a lockout with its old level kept, so it
              * looks the moment the lockout ends */
+            cj |= cdk;
             if (irp && ((jump && !locked) || cj || now >= look_at || g_probe_req)) {
                 why = jump ? (step ? "jump" : "near") : cj ? "color" :
                       g_probe_req ? "requested" : "timer";
                 creep = (jump || (cj && s < A)) && !sd_stepped(R);
                 if (why[0] == 'c') {
-                    LOGD(MOD, "colour moved %.1f %%", (double)cdev);
+                    if (!cdk) LOGD(MOD, "colour moved %.1f %%", (double)cdev);
                     c_next = now + c_gap;
                     c_gap = c_gap * 2 < SD_LOOK_S * 1000LL ? c_gap * 2 : SD_LOOK_S * 1000LL;
                 } else if (why[0] == 't') c_gap = SD_COLOR_GAP_MS;
+                int req = g_probe_req;
                 g_probe_req = 0;
                 /* without the illuminator the scene reads no brighter: a
-                 * look that cannot get below the bar would only blink */
-                if (why[0] != 't' && why[0] != 'r' && B != 0.0f && s * SD_SKIP >=
+                 * look that cannot get below the bar would only blink; a
+                 * requested one still runs */
+                if (why[0] != 't' && !req && B != 0.0f && s * SD_SKIP >=
                     (ubar = sd_look_bar(dn, why, B, K, F, Fn, Kf, now - Kf_at, Nf, creep))) {
                     LOGD(MOD, "look (%s) skipped: lit %.0f, bar %.0f", why, (double)s, (double)ubar);
                     A = s; a_by = 0; hold = rise = 0; look_at = now + look_ms;

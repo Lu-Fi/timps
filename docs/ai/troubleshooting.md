@@ -1139,7 +1139,7 @@ brings it back.
 | `ISP did not follow the switch to <mode> - one cycle` | W | The ISP latched; one real edge through the other mode. A restart cures a permanent latch. |
 | `ISP is in <mode> while auto day/night stands on <mode> - switching back (daynight.enabled = 0 to switch by hand)` | W | **Unreleased.** Something outside timps (a hand-run `daynight day`/`night`) switched the ISP while auto runs; after 10 s timps switches back once. Switch by hand only with `daynight.enabled = 0`. |
 | `no exposure reading from <path> - detection idle` | W | Check `daynight.isp_path`. |
-| `boot: no exposure reading - asserting the persisted <mode>` | W | No measurement at boot; the persisted mode is asserted once. |
+| `boot: no exposure reading - asserting <mode> (image.running_mode in the file)` | W | No measurement at boot; the mode in `/etc/timps.conf` is asserted once. While auto runs, that file value is the last mode set outside auto, not the last switch (**unreleased** wording; before: `asserting the persisted <mode>`). |
 | `'<cmd> <arg>' failed (rc=…) - is the script installed?` | W | `daynight.switch_cmd` missing. **Without it the IR-cut filter never moves.** |
 | `'<cmd> on\|off' failed (rc=…)` | W | `daynight.irprobe_cmd` missing/failing; two in a row turn looks off for the session (the camera then checks like one without a switchable LED). |
 | `illuminator could not be switched back on after a look …` | W | The hook failed twice; the LED may stay off until the next switch. |
@@ -2958,7 +2958,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `check (%s): day, exposure %.0f < %.0f` / `check (%s): night, exposure %.0f` | I | The day pipeline's verdict; the exposure is what `day_gain` is compared with. |
 | `ISP did not follow the switch to %s - one cycle` | W | The ISP latch; one real transition. §3.4 |
 | `ISP is in %s while auto day/night stands on %s - switching back (daynight.enabled = 0 to switch by hand)` | W | **Unreleased.** A standing ISP desync (hand-run board script) re-switched once after 10 s. |
-| `boot: no exposure reading - asserting the persisted %s` | W | No measurement at boot. |
+| `boot: no exposure reading - asserting %s (image.running_mode in the file)` | W | No measurement at boot. |
 | `'%s %s' failed (rc=%d) - is the script installed?` | W | `daynight.switch_cmd` missing. **Without it the IR-cut filter never moves.** §11.2 |
 | `'%s %s' failed (rc=%d)` | W | `daynight.irprobe_cmd` missing/failing; two in a row turn looks off. |
 | `illuminator could not be switched back on after a look (%d %s) - it may stay off until the next switch` | W | The hook failed twice. |

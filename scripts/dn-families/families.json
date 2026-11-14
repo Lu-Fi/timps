@@ -4396,6 +4396,72 @@
      "reference follows the darker scene"
     ]
    }
+  },
+  {
+   "name": "darker_noisy",
+   "title": "the scene settles about 11 % darker, 10 % AE noise around the 1.1 line: the reference follows",
+   "duration_s": 1800,
+   "initial_mode": "night",
+   "noise_pct": 10,
+   "timelines": {
+    "pan": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      300,
+      "dark"
+     ],
+     [
+      301,
+      "dark_112"
+     ],
+     [
+      1800,
+      "dark_112"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 60,
+    "max_switches": 2,
+    "expect_log_count": {
+     "reference follows the darker scene": 1
+    }
+   }
+  },
+  {
+   "name": "hand_switch_idle",
+   "title": "the board script run by hand to day while Idle-Dark keeps the IR off: switched back",
+   "duration_s": 1200,
+   "initial_mode": "night",
+   "config": {
+    "daynight.ir_idle_off": 1,
+    "daynight.ir_idle_linger_s": 60
+   },
+   "isp_manual": [
+    [
+     600,
+     "day"
+    ]
+   ],
+   "timelines": {
+    "pan": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      1200,
+      "dark"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 60,
+    "max_switches": 3
+   }
   }
  ]
 }
