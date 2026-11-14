@@ -147,7 +147,7 @@ def build(fam, pname, prof, day_gain, night_gain):
         scn["isp_manual"] = fam["isp_manual"]
     if "day_lag_s" in fam:
         scn["day_lag_s"] = fam["day_lag_s"]
-    scn["bounds_extra"] = {k: b[k] for k in ("max_on_s", "max_off_s") if k in b}
+    scn["bounds_extra"] = {k: b[k] for k in ("max_on_s", "max_off_s", "max_pendulum") if k in b}
     scn.update(prof.get("harness", {}))
     return scn
 
@@ -229,11 +229,11 @@ def run_one(binary, path, keep):
         fails.append(("light-on", "%d s to day (bound %d s)" % (on, bnd["max_on_s"])))
     if "max_off_s" in bnd and off > bnd["max_off_s"]:
         fails.append(("light-off", "%d s to night (bound %d s)" % (off, bnd["max_off_s"])))
-    if pend:
+    if pend > bnd.get("max_pendulum", 0):
         fails.append(("pendulum", "%d switch pairs closer than %d s without a light change"
                       % (pend, PENDULUM_S)))
     lat_bad = any(k in ("light-on", "light-off") for k, _ in fails)
-    return {"ok": p.returncode == 0 and not pend and not lat_bad, "on_s": on, "off_s": off, "switches": int(sw.group(1)) if sw else -1,
+    return {"ok": p.returncode == 0 and pend <= bnd.get("max_pendulum", 0) and not lat_bad, "on_s": on, "off_s": off, "switches": int(sw.group(1)) if sw else -1,
             "pairs": pairs, "pendulum": pend, "switch_t": switches,
             "looks": int(sw.group(2)) if sw else -1,
             "wrong": int(wr.group(1)) if wr else -1,

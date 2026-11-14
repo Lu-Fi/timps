@@ -1272,11 +1272,19 @@ to `total_gain`.
   a brighter light still asks. Nothing failed yet (after boot): 2 × `day_gain`.
   `k` and the failures survive jumps and day, not a restart; the `look (...)`
   debug line logs `k`.
+* **No check far above day** (**unreleased**): whatever the bar, a look does
+  not ask while the reading without the illuminator is above
+  `1.3 × day_gain / min(k, 1)`. In the fleet 0 of 107 checks asked at or
+  above `day_gain` found day (2026-11-10/14); the margin is for scenes with
+  k down to 0.8.
 * **After a failed check** the next one needs a darker look: the bar becomes
   `dark × day_gain / day reading` (at least `0.5 × dark`, so a light that
   halves the dark reading asks again), or `0.85 × dark` when the check read the AE
   at its limit or above 4 × `night_gain` (the Eufy reads 40960 in the dark
-  without a reported limit). A jump forgets the bar (new light). Checks are
+  without a reported limit). A jump forgets the bar (new light). A check
+  without a look before it (boot, guarantee) leaves the bar to the next
+  look to learn; the skip test runs meanwhile (**unreleased**: before, it
+  was off while the bar was unlearned). Checks are
   locked out for 1, 2, 4, 8, 16 min after consecutive failures, then 16 min
   each (**since v1.11.0**, before: doubling without limit); a day resets it.
 * **Near day only** (**since v1.12.0**): whatever the bar, a look asks only

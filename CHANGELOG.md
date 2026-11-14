@@ -57,6 +57,22 @@ semantic versioning.
   colour look on a darker scene goes through the same single skip test
   (#7, #13).
 
+- Day/night: a check that has no exposure reading yet (after the ISP
+  readback cycle) no longer judges: it waited out its settle during the
+  cycle and took `-1` for day (cam-vanhua-t55a, 2026-11-11). The cycle
+  restarts the settle, and the re-assert no longer POSTs a
+  `image.running_mode` that contradicts the engine's own switch.
+
+- Day/night: a look does not ask for a check while the reading without the
+  illuminator is above `1.3 × day_gain / min(k, 1)`; 0 of 107 such checks
+  found day in the fleet (2026-11-10/14). The skip test
+  also runs while the scene bar is still to be learned (after a restart
+  in the dark it was off). The desync re-switch backs off
+  (10 s, doubling up to 16 min) until the ISP agrees for 60 s. New replay
+  families `dawn_twice`, `hand_switch_repeat`; `dawn_ir` allows one more
+  failed check (its longest wrong run drops from 331 s to 97 s). Fleet
+  review in `dev_notes/FABLE-DN-LOG-REVIEW-2026-11-14.md`.
+
 - Day/night: the boot fallback without any exposure reading now logs
   `asserting <mode> (image.running_mode in the file)`; in auto that file
   value is the last mode set outside auto (#12).

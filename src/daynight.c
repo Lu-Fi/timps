@@ -78,7 +78,8 @@ static int dn_mag_min(int mag, int other)
 #define DN_REASSERT_MS    8000
 #define DN_REASSERT_COUNT 2
 #define DN_CYCLE_HOLD_MS  5000   /* the other mode of a readback cycle, held */
-#define DN_DESYNC_MS      10000  /* a standing ISP desync this long is re-switched, once */
+#define DN_DESYNC_MS      10000  /* a standing ISP desync this long is re-switched */
+#define DN_DESYNC_OK_MS   60000  /* ... and the wait back to that once the ISP agreed this long */
 #ifndef DN_VERIFY_MS
 #define DN_VERIFY_MS 18000
 #endif
@@ -1210,6 +1211,7 @@ enum { S_BOOT = -1, S_DAY = 0, S_NIGHT = 1, S_LOOK = 2, S_CHECK = 3 };
 #define SD_RISE       1.10f     /* ... starting this far above it (noise stays below) */
 #define SD_B_MIN      0.50f     /* a light that halves the dark reading may ask again */
 #define SD_NEAR       4.0f      /* a look asks only where k puts the check this near day_gain */
+#define SD_ASK_MAX    1.30f     /* ... and never at a dark reading this far over it (k 0.8) */
 #define SD_LOOK_S     2700      /* 8 s every 45 min = 0.30 % of the night */
 #define SD_LOOK_COLOR_S 21600   /* jump + colour watch the night: the timer is a backstop */
 #define SD_COLOR_GAP_MS 300000  /* colour looks: 5 min apart, doubling while nothing else looks */
@@ -1296,6 +1298,10 @@ static float sd_look_bar(const ms_daynight_cfg *dn, const char *why, float B,
     /* a bar relative to a railed check knows nothing of the distance
      * to day: dawn moved the colour at 19x day_gain (cam-vorne) */
     if (bar > SD_NEAR * dn->day_gain / K) bar = SD_NEAR * dn->day_gain / K;
+    /* the check reads k x the dark reading: over day_gain it found day
+     * 0 of 107 times (fleet 2026-11-10/14), the margin is for k 0.8 */
+    float cap = SD_ASK_MAX * dn->day_gain / fminf(K, 1.0f);
+    if (bar > cap) bar = cap;
     return bar;
 }
 
@@ -1377,6 +1383,7 @@ static void *dn_thread(void *arg)
     int64_t day_at = 0, mode_at = 0, N_at = 0, verify_at = 0, quiet = 0, idle_at = 0;
     int64_t reassert_at = 0, cycle_at = 0, rise = 0, a_by = 0, ds_at = 0;
     int     ds_done = 0, rlow = 0;
+    int64_t ds_ok = 0, ds_wait = DN_DESYNC_MS;
     int     reassert_left = 0;
     int64_t lock_until = 0, lock_ms = SD_LOCK_MS;  /* failed checks: 1, 2, 4 ... 16 min */
     const char *why = "boot";
@@ -1468,12 +1475,15 @@ static void *dn_thread(void *arg)
         if (cur == DN_DAY) day_at = now;
 
         if (reassert_at && now >= reassert_at) {
-            hub_control("image.running_mode", rm ? "1" : "0");
-            LOGD(MOD, "re-asserting running_mode=%d after switch (%d left)",
-                 rm ? 1 : 0, reassert_left - 1);
+            /* a stale running_mode would only drive the ISP against the switch */
             if ((cur == DN_NIGHT) != (rm != 0))
                 LOGW(MOD, "running_mode=%d never followed the switch to %s",
                      rm ? 1 : 0, cur == DN_NIGHT ? "night" : "day");
+            else {
+                hub_control("image.running_mode", rm ? "1" : "0");
+                LOGD(MOD, "re-asserting running_mode=%d after switch (%d left)",
+                     rm ? 1 : 0, reassert_left - 1);
+            }
             reassert_at = --reassert_left > 0 ? now + DN_REASSERT_MS : 0;
         }
 
@@ -1483,6 +1493,7 @@ static void *dn_thread(void *arg)
             if (now < cycle_at) goto out;
             dn_switch(cur, "isp readback", dn->switch_cmd, s, A, B);
             cycle_at = 0; s = -1.0f; stable = 0;
+            if (st == S_CHECK) due = now + DN_PROBE_SETTLE_S * 1000;
             verify_at = now + DN_VERIFY_MS;
             reassert_left = DN_REASSERT_COUNT; reassert_at = now + DN_REASSERT_MS;
         }
@@ -1502,12 +1513,18 @@ static void *dn_thread(void *arg)
         if (cycled && sm.isp == cur) cycled = 0;
         /* a hand-run board script while auto runs: the next look would light
          * the IR into the day pipeline (cam .21 2026-11-10) */
+        /* an ISP that falls back again: each re-switch waits twice as long,
+         * until it has agreed for a minute (cam-secuplug 2026-11-12) */
+        if (sm.isp != cur) ds_ok = 0;
+        else if (!ds_ok) ds_ok = now;
+        else if (now - ds_ok >= DN_DESYNC_OK_MS) ds_wait = DN_DESYNC_MS;
         if (sm.isp == cur) ds_at = ds_done = 0;
         else if (!desync || ds_done || cycled || (st == S_LOOK && !idle)) ds_at = 0;
         else {
             if (!ds_at) ds_at = now;
-            else if (now - ds_at >= DN_DESYNC_MS) {
+            else if (now - ds_at >= ds_wait) {
                 ds_done = 1;
+                ds_wait = ds_wait * 2 < SD_LOCK_MAX_MS ? ds_wait * 2 : SD_LOCK_MAX_MS;
                 LOGW(MOD, "ISP is in %s while auto day/night stands on %s - switching "
                      "back (daynight.enabled = 0 to switch by hand)",
                      sm.isp == DN_NIGHT ? "night" : "day", cur == DN_NIGHT ? "night" : "day");
@@ -1666,8 +1683,9 @@ static void *dn_thread(void *arg)
                 /* without the illuminator the scene reads no brighter: a
                  * look that cannot get below the bar would only blink; a
                  * requested one still runs */
-                if (why[0] != 't' && !req && B != 0.0f && s * SD_SKIP >=
-                    (ubar = sd_look_bar(dn, why, B, K, F, Fn, Kf, now - Kf_at, Nf, creep))) {
+                if (why[0] != 't' && !req && s * SD_SKIP >=
+                    (ubar = sd_look_bar(dn, why, B == 0.0f ? -1.0f : B, K, F, Fn, Kf,
+                                        now - Kf_at, Nf, creep))) {
                     LOGD(MOD, "look (%s) skipped: lit %.0f, bar %.0f", why, (double)s, (double)ubar);
                     A = s; a_by = 0; hold = rise = 0; look_at = now + look_ms;
                     Crg = Prg = -1.0f; chold = 0; cdev = -1.0f; c_from = now;
@@ -1733,7 +1751,7 @@ static void *dn_thread(void *arg)
             break;
         }
         case S_CHECK:
-            if (now < due) break;
+            if (now < due || s <= 0.0f) break;
             if (sm.isp >= 0 && sm.isp != DN_DAY && now < due + DN_VERIFY_MS) break;
             /* the AE can still report the night side after the switch (T40:
              * 554 at 8 s, 22117 at 22 s): night is final at once, day only

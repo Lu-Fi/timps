@@ -1074,9 +1074,10 @@ purple/magenta cast. **Do not advise "just set `image.running_mode = 0` to
 get colour back".** Let the day/night machine do it, or drive
 `daynight.switch_cmd` too.
 
-Related warning: `running_mode=<d> never followed the switch to <mode> -
-hook chain or manual override` — the board hook chain (`switch_cmd` → `color`
+Related warning: `running_mode=<d> never followed the switch to <mode>` — the board hook chain (`switch_cmd` → `color`
 → `POST /control`) is incomplete, or someone overrode the mode by hand.
+**Unreleased:** timps then no longer re-POSTs that stale `running_mode`
+(before, the re-assert drove the ISP against its own switch).
 
 **(b) Wrong Bayer/flip handling at ISP probe time.** On T21 (and relatives)
 the ISP samples the sensor's mbus code at probe, not at `sensor_init`, so a
@@ -1137,7 +1138,7 @@ brings it back.
 | `switching to day\|night (<why>): <cmd> …` | I | The board drive; the tail is machine-readable. |
 | `daynight.day_gain A is above night_gain B - swapped` | W | `day_gain` must be the lower number. |
 | `ISP did not follow the switch to <mode> - one cycle` | W | The ISP latched; one real edge through the other mode. A restart cures a permanent latch. |
-| `ISP is in <mode> while auto day/night stands on <mode> - switching back (daynight.enabled = 0 to switch by hand)` | W | **Unreleased.** Something outside timps (a hand-run `daynight day`/`night`) switched the ISP while auto runs; after 10 s timps switches back once. Switch by hand only with `daynight.enabled = 0`. |
+| `ISP is in <mode> while auto day/night stands on <mode> - switching back (daynight.enabled = 0 to switch by hand)` | W | **Unreleased.** Something outside timps (a hand-run `daynight day`/`night`) switched the ISP while auto runs; after 10 s timps switches back. If the ISP falls back again, each re-switch waits twice as long (up to 16 min) until the ISP has agreed for 60 s. Switch by hand only with `daynight.enabled = 0`. |
 | `no exposure reading from <path> - detection idle` | W | Check `daynight.isp_path`. |
 | `boot: no exposure reading - asserting <mode> (image.running_mode in the file)` | W | No measurement at boot; the mode in `/etc/timps.conf` is asserted once. While auto runs, that file value is the last mode set outside auto, not the last switch (**unreleased** wording; before: `asserting the persisted <mode>`). |
 | `'<cmd> <arg>' failed (rc=…) - is the script installed?` | W | `daynight.switch_cmd` missing. **Without it the IR-cut filter never moves.** |
