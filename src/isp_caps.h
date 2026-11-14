@@ -27,13 +27,14 @@
 
 #if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)|| \
     defined(PLATFORM_T23)||defined(PLATFORM_T30)||defined(PLATFORM_T31)|| \
-    defined(PLATFORM_T40)||defined(PLATFORM_T41)||defined(PLATFORM_C100)
+    defined(PLATFORM_T33)||defined(PLATFORM_T40)||defined(PLATFORM_T41)|| \
+    defined(PLATFORM_C100)
 #define ISP_PLATFORM_KNOWN 1
 #endif
 
-/* T40/T41: reworked tuning API (IMPVI_NUM + pointer arguments) with a
+/* T33/T40/T41: reworked tuning API (IMPVI_NUM + pointer arguments) with a
  * reduced tuning feature set; flips go through SetHVFLIP. */
-#if defined(PLATFORM_T40)||defined(PLATFORM_T41)
+#if defined(PLATFORM_T33)||defined(PLATFORM_T40)||defined(PLATFORM_T41)
 #define ISP_NEW_TUNING_API 1
 #endif
 

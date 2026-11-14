@@ -6,6 +6,16 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- T33 build (experimental, OpenIMP): `PLATFORM=T33` compiles against the
+  T33 2.0.2.1 headers, with the T41 form of the ISP sensor/tuning API and
+  the classic encoder path with T33's own rate-control structs. Not yet run
+  on a camera. Without `jpeg.quality` (SDK default JPEG QP), ISP gain/WB/NR/
+  AE-compensation keys, ALC gain, rotation and ROI. T32 still does not
+  build (its OpenIMP line follows the vendor 2.2.0 API, which the header
+  submodule lacks). T31/T40/T41 binaries are unchanged (Lu-Fi/openimp#515).
+
 ### Fixed
 
 - Day/night: a colour look on a darker scene ("colour moved while the scene

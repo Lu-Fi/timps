@@ -1853,7 +1853,7 @@ static int isp_apply_image(const char *k)
         IMPISPHVFLIP m = im->hflip
             ? (im->vflip ? IMPISP_FLIP_HV_MODE : IMPISP_FLIP_H_MODE)
             : (im->vflip ? IMPISP_FLIP_V_MODE  : IMPISP_FLIP_NORMAL_MODE);
-#if defined(PLATFORM_T41)
+#if defined(PLATFORM_T33)||defined(PLATFORM_T41)
         /* T41 wraps the mode in IMPISPHVFLIPAttr (sensor + per-channel ISP);
          * flip at the sensor, leave the ISP channels at NORMAL */
         IMPISPHVFLIPAttr fa; memset(&fa,0,sizeof fa);
@@ -2491,7 +2491,7 @@ static void isp_set_sensor_fps(int want)
 {
     int rc, grc = -1;
     uint32_t hn = 0, hd = 0;
-#if defined(PLATFORM_T41)
+#if defined(PLATFORM_T33)||defined(PLATFORM_T41)
     IMPISPSensorFps f = { .num=(uint32_t)want, .den=1 }, g = { 0, 0 };
     rc  = IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN, &f);
     grc = IMP_ISP_Tuning_GetSensorFPS(IMPVI_MAIN, &g);
@@ -2522,7 +2522,7 @@ static int isp_init(void)
 {
     int ret;
     memset(&g_sensor,0,sizeof g_sensor);
-#if defined(PLATFORM_T40)||defined(PLATFORM_T41)
+#if defined(ISP_NEW_TUNING_API)
     /* T40/T41 only: rst_gpio/pwdn_gpio/power_gpio are `int` here and are
      * real, active pin numbers - unlike the same-named `unsigned short`
      * fields on T20/T23/T31, marked "invalid now" and left untouched by
@@ -2534,6 +2534,9 @@ static int isp_init(void)
     g_sensor.rst_gpio = -1;
     g_sensor.pwdn_gpio = -1;
     g_sensor.power_gpio = -1;
+#if defined(PLATFORM_T33)
+    g_sensor.switch_gpio = -1;
+#endif
 #endif
     /* bounded copies: sensor.model (64) is larger than name (32) / i2c.type (20).
      * sensor.model is runtime-mutable via /control, so read it under
@@ -2548,7 +2551,7 @@ static int isp_init(void)
     g_sensor.i2c.addr = g_hcfg->sensor.i2c_addr;
     {
         const ms_sensor_cfg *sc = &g_hcfg->sensor;
-#if defined(PLATFORM_T40)||defined(PLATFORM_T41)
+#if defined(ISP_NEW_TUNING_API)
         /* boards that wire the sensor off adapter 0 / MCLK0 / CSI0 (Eufy
          * S350: i2c1, MCLK1, rst PC27) fail AddSensor with the zero defaults */
         if (sc->i2c_adapter >= 0)     g_sensor.i2c.i2c_adapter_id = sc->i2c_adapter;
@@ -2590,7 +2593,7 @@ static int isp_init(void)
      * model/i2c address they fail, yet init used to march on and bring up a
      * pipeline that could never deliver a frame (silent no-video). Fail hard
      * here instead, unwinding exactly what was already opened. */
-#if defined(PLATFORM_T40)||defined(PLATFORM_T41)
+#if defined(ISP_NEW_TUNING_API)
     if (IMP_ISP_AddSensor(IMPVI_MAIN, &g_sensor) < 0){
         LOGE(MOD,"IMP_ISP_AddSensor failed (sensor=%s)", g_sensor.name);
         IMP_ISP_Close();
@@ -2622,7 +2625,7 @@ static int isp_init(void)
         while (IMP_System_Init() < 0) {
             if (++si_tries >= 5) {
                 LOGE(MOD,"IMP_System_Init failed after %d tries", si_tries);
-#if defined(PLATFORM_T40)||defined(PLATFORM_T41)
+#if defined(ISP_NEW_TUNING_API)
                 IMP_ISP_DisableSensor(IMPVI_MAIN);
                 IMP_ISP_DelSensor(IMPVI_MAIN, &g_sensor);
 #else
@@ -2665,7 +2668,7 @@ static int isp_init(void)
      * resolution when the API is absent (T10/T20/T21/T30) or returns 0. */
 #ifdef ISP_HAS_SENSOR_ATTR
     { IMPISPSENSORAttr sa; memset(&sa,0,sizeof sa);
-#if defined(PLATFORM_T40)||defined(PLATFORM_T41)
+#if defined(ISP_NEW_TUNING_API)
       int sret = IMP_ISP_Tuning_GetSensorAttr(IMPVI_MAIN, &sa);
 #else
       int sret = IMP_ISP_Tuning_GetSensorAttr(&sa);
@@ -3190,6 +3193,58 @@ static void qp_bounds(const ms_vstream_cfg *v, int *qmin, int *qmax)
  * match the channel's codec: the H265 structs are NOT layout-compatible
  * with H264's. staticTime/frmQPStep/gopQPStep/adaptiveMode/gopRelation stay
  * at the historical literals - no SDK header documents a range for them. */
+#if defined(PLATFORM_T33)
+/* T33 2.0.2.1: one shape for both codecs (the H265 structs repeat the H264
+ * ones), no frmQPStep/gopQPStep, and Smart is not VBR-shaped. Values follow
+ * IMP_Encoder_SetDefaultParam (OpenIMP t32_rc_default_attr); initialQp 0xff
+ * is its "no initial QP". */
+#define T33_RC_HEAD(x, kb) do { \
+        (x).maxQp = (x).maxIQp = (uint8_t)qmax; \
+        (x).minQp = (x).minIQp = (uint8_t)qmin; \
+        (x).initialQp = 0xff; (x).iBiasLvl = (int8_t)v->i_bias_lvl; \
+        (x).staticTime = 2; (x).qualityLvl = (uint32_t)v->quality_lvl; \
+        (x).maxIprop = 100; (x).minIprop = 1; \
+        (x).maxIPictureSize = (kb) * 6u / 5u; \
+        (x).maxPPictureSize = (kb) * 18u / 25u; } while (0)
+static void classic_rc_fill(IMPEncoderAttrRcMode *m, const ms_vstream_cfg *v)
+{
+    int qmin, qmax; qp_bounds(v, &qmin, &qmax);
+    uint32_t kb = (uint32_t)v->bitrate_kbps;
+    memset(m, 0, sizeof *m);
+    if (v->rc_mode==MS_RC_FIXQP){
+        m->rcMode = ENC_RC_MODE_FIXQP;
+        m->attrH264FixQp.IQp = m->attrH264FixQp.PQp = m->attrH264FixQp.BQp =
+            (v->qp>0)?(uint32_t)v->qp:35;
+    } else if (v->rc_mode==MS_RC_SMART){
+        m->rcMode = ENC_RC_MODE_SMART;
+        IMPEncoderAttrH264Smart *s = &m->attrH264Smart;
+        T33_RC_HEAD(*s, kb);
+        s->maxBitRate = kb; s->changePos = (uint32_t)v->change_pos;
+        s->minStillRate = 25; s->maxStillQp = 35;
+        s->supSmtStillLvl = 5; s->supSmtStillRateLvl = 2; s->maxSupSmtStillRate = 20;
+    } else if (v->rc_mode==MS_RC_VBR || v->rc_mode==MS_RC_CAPPED_VBR ||
+               v->rc_mode==MS_RC_CAPPED_QUALITY){
+        if (v->rc_mode!=MS_RC_VBR){
+            static int warned_capped = 0;
+            if (!warned_capped){
+                LOGW(MOD,"rc_mode capped_vbr/capped_quality has no classic-SoC equivalent -> using vbr");
+                warned_capped = 1;
+            }
+        }
+        m->rcMode = ENC_RC_MODE_VBR;
+        IMPEncoderAttrH264VBR *a = &m->attrH264Vbr;
+        T33_RC_HEAD(*a, kb);
+        a->maxBitRate = kb; a->changePos = (uint32_t)v->change_pos;
+    } else {
+        m->rcMode = ENC_RC_MODE_CBR;
+        IMPEncoderAttrH264CBR *a = &m->attrH264Cbr;
+        T33_RC_HEAD(*a, kb);
+        a->outBitRate = kb; a->IPfrmQPDelta = a->PPfrmQPDelta = 8;
+        a->flucLvl = (uint8_t)v->fluc_lvl;
+    }
+}
+#undef T33_RC_HEAD
+#else
 static void classic_rc_fill(IMPEncoderAttrRcMode *m, const ms_vstream_cfg *v)
 {
     int qmin, qmax; qp_bounds(v, &qmin, &qmax);   /* unset defaults + ordered */
@@ -3264,6 +3319,7 @@ static void classic_rc_fill(IMPEncoderAttrRcMode *m, const ms_vstream_cfg *v)
         }
     }
 }
+#endif /* PLATFORM_T33 */
 #endif /* !ENC_NEW_API */
 
 #if defined(PLATFORM_T20)
@@ -3378,6 +3434,10 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
 #endif
     a.encAttr.bufSize  = 0;
     a.encAttr.profile  = v->profile;
+#if defined(PLATFORM_T33)
+    /* H.264 takes the 0/1/2 index, H.265 the IMPEncoderProfile value */
+    if (v->codec==MS_VC_H265) a.encAttr.profile = IMP_ENC_PROFILE_HEVC_MAIN;
+#endif
     a.encAttr.picWidth = ew;
     a.encAttr.picHeight= eh;
     a.rcAttr.outFrmRate.frmRateNum = v->fps;
@@ -4308,7 +4368,7 @@ static void *jpeg_thread(void *arg)
  * exactly the 1..100 -> quant-table mapping libjpeg uses. Previously the classic
  * branch did (void)quality and every JPEG came out at the SDK's fixed default,
  * silently ignoring jpeg.quality / videoN.jpeg_quality. */
-#if !defined(PLATFORM_T10)
+#if !defined(PLATFORM_T10) && !defined(PLATFORM_T33)
 /* Standard JPEG Annex-K base quantization tables (== quality 50), natural
  * (row-major) order. Used by every classic SoC except T10 - including T20,
  * whose IMPEncoderJpegeQl.qmem_table is 256 bytes (vs 128 on T21/T23/T30):
@@ -4351,19 +4411,20 @@ static uint8_t jpeg_scale_q(uint8_t base, int scale)
     if (v > 255) v = 255;
     return (uint8_t)v;
 }
-#endif /* !T10 */
+#endif /* !T10 && !T33 */
 
 static void jpeg_apply_quality(int chn, int quality)
 {
     if (quality < 1)   quality = 1;
     if (quality > 100) quality = 100;
-#if defined(PLATFORM_T10)
+#if defined(PLATFORM_T10) || defined(PLATFORM_T33)
     /* prudynt-t special-cases exactly T10 ("fix for bad jpeg image quality on
      * T10 based cameras": user_ql_en=0, i.e. leave the SDK's own default table
      * alone) - a custom table there makes JPEG WORSE, not just unconfirmed, so
      * report honestly instead of guessing or (as before) silently dropping it. */
     (void)chn;
-    LOGW(MOD,"jpeg.quality=%d not applied on T10, SDK default kept",
+    /* T33: no IMP_Encoder_SetJpegeQl, only SetJpegQp (mapping unmeasured) */
+    LOGW(MOD,"jpeg.quality=%d not applied on this SoC, SDK default kept",
          quality);
 #else
     /* T20/T21/T23/T30: fill the qtable's first 128 bytes - 64 luma then 64
@@ -4424,6 +4485,11 @@ static int jpeg_enc_create(int chn, int w, int h, int quality, int fps)
     (void)fps;
     a.encAttr.enType=PT_JPEG;
     a.encAttr.picWidth=w; a.encAttr.picHeight=h;
+#if defined(PLATFORM_T33)
+    /* jpegQp 0 is the lowest quality; out of range picks the SDK default */
+    a.rcAttr.attrRcMode.rcMode = ENC_RC_MODE_FIXQP;
+    a.rcAttr.attrRcMode.attrJPEGFixQp.qp = (uint32_t)-1;
+#endif
 #endif
     if (IMP_Encoder_CreateChn(chn,&a)!=0){ LOGE(MOD,"JPEG CreateChn %d failed",chn); return -1; }
 #ifndef ENC_NEW_API
@@ -6219,7 +6285,7 @@ static void ing_stop(void)
     }
     g_nv=0;
     td(IMP_System_Exit(),"System_Exit");
-#if defined(PLATFORM_T40)||defined(PLATFORM_T41)
+#if defined(ISP_NEW_TUNING_API)
     td(IMP_ISP_DisableSensor(IMPVI_MAIN),"ISP_DisableSensor");
     td(IMP_ISP_DelSensor(IMPVI_MAIN,&g_sensor),"ISP_DelSensor");
 #else
@@ -6601,6 +6667,43 @@ int hal_enc_rc_read(int enc_chn, hal_enc_rc *out)
         out->max_picture_size = (long long)m.attrCappedVbr.uMaxPictureSize;
         out->max_psnr     = m.attrCappedVbr.uMaxPSNR;
         break;
+    default:
+        snprintf(out->mode,sizeof out->mode,"%d",(int)m.rcMode);
+        break;
+    }
+#elif defined(PLATFORM_T33)
+    (void)codec;
+    switch (m.rcMode){
+    case ENC_RC_MODE_FIXQP:
+        snprintf(out->mode,sizeof out->mode,"fixqp");
+        out->qp = (int)m.attrH264FixQp.IQp;
+        break;
+    case ENC_RC_MODE_CBR:
+        snprintf(out->mode,sizeof out->mode,"cbr");
+        out->max_qp      = m.attrH264Cbr.maxQp;
+        out->min_qp      = m.attrH264Cbr.minQp;
+        out->static_time = (int)m.attrH264Cbr.staticTime;
+        out->bitrate     = (long long)m.attrH264Cbr.outBitRate;
+        out->i_bias_lvl  = m.attrH264Cbr.iBiasLvl;
+        out->ip_delta    = m.attrH264Cbr.IPfrmQPDelta;
+        out->fluc_lvl    = m.attrH264Cbr.flucLvl;
+        out->quality_lvl = (int)m.attrH264Cbr.qualityLvl;
+        break;
+    case ENC_RC_MODE_VBR:
+    case ENC_RC_MODE_SMART: {
+        /* the head up to maxIprop is shared */
+        const IMPEncoderAttrH264VBR *a = &m.attrH264Vbr;
+        snprintf(out->mode,sizeof out->mode,
+                 m.rcMode==ENC_RC_MODE_SMART?"smart":"vbr");
+        out->max_qp      = a->maxQp;
+        out->min_qp      = a->minQp;
+        out->static_time = (int)a->staticTime;
+        out->bitrate     = (long long)a->maxBitRate;
+        out->i_bias_lvl  = a->iBiasLvl;
+        out->change_pos  = (int)a->changePos;
+        out->quality_lvl = (int)a->qualityLvl;
+        break;
+    }
     default:
         snprintf(out->mode,sizeof out->mode,"%d",(int)m.rcMode);
         break;

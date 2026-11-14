@@ -996,9 +996,13 @@ in caller mode: `srt.mode = caller` plus `srt.host`, in a build with
 then `/etc/init.d/S95timps restart`.
 
 **Q: Does timps run on my T33 camera?**
-A: No. timps builds only for T10, T20, T21, T23, T30, T31, T40, T41 and C100.
-Use a streamer that supports the T33 (prudynt-t or raptor; check their docs,
-these docs make no claim about them).
+A: Not in a release. Released builds cover T10, T20, T21, T23, T30, T31, T40,
+T41 and C100. **Unreleased:** a T33 build with OpenIMP compiles (T33 2.0.2.1
+headers), but has not streamed on a camera yet. It has no `jpeg.quality`
+(the SDK default is kept), no ISP gain/WB/NR/AE-compensation keys, no ALC
+gain, rotation or ROI; IVS motion is built in but untested. Until a camera test, use raptor (what the
+thingino T33 image ships today) or prudynt-t; these docs make no claim
+about them. T32 does not build.
 
 **Q: I set `videoN.rotation = 90` on a T23 (or T30) and the picture is not
 rotated.**

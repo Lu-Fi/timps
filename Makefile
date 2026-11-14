@@ -129,6 +129,8 @@ else ifeq ($(PLATFORM),T41)
 # 1.2.6 = the libimp thingino ships for T41 (1.2.0 is layout-compatible for
 # everything timps uses, but keep header and lib on the same version).
 IMP_INC ?= $(INC_ROOT)/T41/1.2.6/en
+else ifeq ($(PLATFORM),T33)
+IMP_INC ?= $(INC_ROOT)/T33/2.0.2.1/en
 else ifeq ($(PLATFORM),T20)
 IMP_INC ?= $(INC_ROOT)/T20/3.12.0/zh
 PLATFORM_CFLAGS += -DFQ_MAX_BYTES=1048576   # P-08: see T21 note above
