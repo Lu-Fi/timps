@@ -998,9 +998,11 @@ then `/etc/init.d/S95timps restart`.
 **Q: Does timps run on my T32 or T33 camera?**
 A: Not in a release. Released builds cover T10, T20, T21, T23, T30, T31, T40,
 T41 and C100. **Unreleased:** T32 and T33 builds with OpenIMP compile (T32
-2.2.0 / T33 2.0.2.1 headers), but have not streamed on a camera yet.
-`image.max_again` and the day/night AE reserve go through `AeExprInfo`;
-`jpeg.quality` maps linearly to the SDK's JPEG QP (unmeasured). There are no
+2.2.0 / T33 2.0.2.1 headers). A first T33L test streamed main and sub,
+took snapshots and answered `/control`; T32 has not run on a camera.
+`image.max_again` and the day/night reading go through `AeExprInfo`, which
+needs OpenIMP support (Lu-Fi/openimp#527); `jpeg.quality` maps linearly to
+the SDK's JPEG QP (95 came out near q78). There are no
 ISP WB/NR/AE-compensation keys, no ALC gain, rotation or ROI; IVS motion is
 built in but untested. Until a camera test, use raptor (what the thingino
 T33 image ships today) or prudynt-t; these docs make no claim about them.

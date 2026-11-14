@@ -6325,11 +6325,31 @@ int hal_image_pinned(void)
 /* daynight gain source: the ISP's own total gain (see hal.h). GetTotalGain is
  * absent from the T40/T41 new tuning API - return unavailable there so daynight
  * falls back to the /proc scrape. IMP returns <0 if the ISP is not yet up. */
+#if defined(PLATFORM_T3X)
+/* T32/T33: the day/night reading from AeExprInfo, since /proc has no AE
+ * lines on the open stack (Lu-Fi/openimp#527); a zero ceiling is no reading */
+static int t3x_ae_read(IMPISPAEExprInfo *e)
+{
+    memset(e, 0, sizeof *e);
+    if (IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN, e) != 0) return -1;
+    return e->AeMaxAGain >= 1024 && e->AeAGain >= 1024 &&
+           e->AeMaxIntegrationTime > 0 ? 0 : -1;
+}
+#endif
 int hal_isp_total_gain(uint32_t *gain)
 {
 #ifndef ISP_NEW_TUNING_API
     if (!gain) return -1;
     return IMP_ISP_Tuning_GetTotalGain(gain) < 0 ? -1 : 0;
+#elif defined(PLATFORM_T3X)
+    IMPISPAEExprInfo e;
+    if (!gain || t3x_ae_read(&e) != 0) return -1;
+    /* [24.8] like GetTotalGain: 256 = 1x; the gains are linear x1024 */
+    double g = 256.0 * e.AeAGain / 1024.0 *
+               (e.AeDGain ? e.AeDGain / 1024.0 : 1.0) *
+               (e.AeIspDGain ? e.AeIspDGain / 1024.0 : 1.0);
+    *gain = g < 4294967295.0 ? (uint32_t)g : 0xffffffffu;
+    return 0;
 #else
     (void)gain; return -1;
 #endif
@@ -6494,6 +6514,16 @@ int hal_isp_exposure(hal_isp_expo *out)
         out->again   = ev.again;
         out->dgain   = ev.dgain;
     }
+    return 0;
+#elif defined(PLATFORM_T3X)
+    IMPISPAEExprInfo e;
+    if (!out || t3x_ae_read(&e) != 0) return -1;
+    memset(out, 0, sizeof *out);
+    out->it_lines     = e.AeIntegrationTime;
+    out->it_min_lines = e.AeMinIntegrationTime;
+    out->it_max_lines = e.AeMaxIntegrationTime;
+    out->again        = e.AeAGain;
+    out->dgain        = e.AeDGain;
     return 0;
 #else
     (void)out; return -1;
