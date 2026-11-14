@@ -8,13 +8,15 @@ semantic versioning.
 
 ### Added
 
-- T33 build (experimental, OpenIMP): `PLATFORM=T33` compiles against the
-  T33 2.0.2.1 headers, with the T41 form of the ISP sensor/tuning API and
-  the classic encoder path with T33's own rate-control structs. Not yet run
-  on a camera. Without `jpeg.quality` (SDK default JPEG QP), ISP gain/WB/NR/
-  AE-compensation keys, ALC gain, rotation and ROI. T32 still does not
-  build (its OpenIMP line follows the vendor 2.2.0 API, which the header
-  submodule lacks). T31/T40/T41 binaries are unchanged (Lu-Fi/openimp#515).
+- T32 and T33 builds (experimental, OpenIMP): `PLATFORM=T32` / `T33`
+  compile against the T32 2.2.0 / T33 2.0.2.1 headers (header submodule
+  now at gtxaspec/ingenic-headers 5bacc0f, which adds T32 2.2.0), with the
+  T41 form of the ISP sensor/tuning API and the classic encoder path with
+  their own rate-control structs. `image.max_again` and the day/night AE
+  reserve use `AeExprInfo` as on T40; `jpeg.quality` maps linearly to
+  `IMP_Encoder_SetJpegQp` (0..98, not measured). No ISP WB/NR/AE-
+  compensation keys, ALC gain, rotation or ROI. Not yet run on a camera.
+  T31/T40/T41 binaries are unchanged (Lu-Fi/openimp#515).
 
 ### Fixed
 

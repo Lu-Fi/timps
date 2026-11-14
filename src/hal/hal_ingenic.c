@@ -47,6 +47,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <time.h>
+#include <math.h>
 #include <errno.h>      /* ETIMEDOUT (act_wait predicate loop) */
 
 #define MOD "HAL_ING"
@@ -1853,7 +1854,7 @@ static int isp_apply_image(const char *k)
         IMPISPHVFLIP m = im->hflip
             ? (im->vflip ? IMPISP_FLIP_HV_MODE : IMPISP_FLIP_H_MODE)
             : (im->vflip ? IMPISP_FLIP_V_MODE  : IMPISP_FLIP_NORMAL_MODE);
-#if defined(PLATFORM_T33)||defined(PLATFORM_T41)
+#if defined(PLATFORM_T3X)||defined(PLATFORM_T41)
         /* T41 wraps the mode in IMPISPHVFLIPAttr (sensor + per-channel ISP);
          * flip at the sensor, leave the ISP channels at NORMAL */
         IMPISPHVFLIPAttr fa; memset(&fa,0,sizeof fa);
@@ -2491,7 +2492,7 @@ static void isp_set_sensor_fps(int want)
 {
     int rc, grc = -1;
     uint32_t hn = 0, hd = 0;
-#if defined(PLATFORM_T33)||defined(PLATFORM_T41)
+#if defined(PLATFORM_T3X)||defined(PLATFORM_T41)
     IMPISPSensorFps f = { .num=(uint32_t)want, .den=1 }, g = { 0, 0 };
     rc  = IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN, &f);
     grc = IMP_ISP_Tuning_GetSensorFPS(IMPVI_MAIN, &g);
@@ -2534,7 +2535,7 @@ static int isp_init(void)
     g_sensor.rst_gpio = -1;
     g_sensor.pwdn_gpio = -1;
     g_sensor.power_gpio = -1;
-#if defined(PLATFORM_T33)
+#if defined(PLATFORM_T3X)
     g_sensor.switch_gpio = -1;
 #endif
 #endif
@@ -3193,8 +3194,8 @@ static void qp_bounds(const ms_vstream_cfg *v, int *qmin, int *qmax)
  * match the channel's codec: the H265 structs are NOT layout-compatible
  * with H264's. staticTime/frmQPStep/gopQPStep/adaptiveMode/gopRelation stay
  * at the historical literals - no SDK header documents a range for them. */
-#if defined(PLATFORM_T33)
-/* T33 2.0.2.1: one shape for both codecs (the H265 structs repeat the H264
+#if defined(PLATFORM_T3X)
+/* T32/T33: one shape for both codecs (the H265 structs repeat the H264
  * ones), no frmQPStep/gopQPStep, and Smart is not VBR-shaped. Values follow
  * IMP_Encoder_SetDefaultParam (OpenIMP t32_rc_default_attr); initialQp 0xff
  * is its "no initial QP". */
@@ -3319,7 +3320,7 @@ static void classic_rc_fill(IMPEncoderAttrRcMode *m, const ms_vstream_cfg *v)
         }
     }
 }
-#endif /* PLATFORM_T33 */
+#endif /* PLATFORM_T3X */
 #endif /* !ENC_NEW_API */
 
 #if defined(PLATFORM_T20)
@@ -3434,7 +3435,7 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
 #endif
     a.encAttr.bufSize  = 0;
     a.encAttr.profile  = v->profile;
-#if defined(PLATFORM_T33)
+#if defined(PLATFORM_T3X)
     /* H.264 takes the 0/1/2 index, H.265 the IMPEncoderProfile value */
     if (v->codec==MS_VC_H265) a.encAttr.profile = IMP_ENC_PROFILE_HEVC_MAIN;
 #endif
@@ -4368,7 +4369,7 @@ static void *jpeg_thread(void *arg)
  * exactly the 1..100 -> quant-table mapping libjpeg uses. Previously the classic
  * branch did (void)quality and every JPEG came out at the SDK's fixed default,
  * silently ignoring jpeg.quality / videoN.jpeg_quality. */
-#if !defined(PLATFORM_T10) && !defined(PLATFORM_T33)
+#if !defined(PLATFORM_T10) && !defined(PLATFORM_T3X)
 /* Standard JPEG Annex-K base quantization tables (== quality 50), natural
  * (row-major) order. Used by every classic SoC except T10 - including T20,
  * whose IMPEncoderJpegeQl.qmem_table is 256 bytes (vs 128 on T21/T23/T30):
@@ -4417,14 +4418,21 @@ static void jpeg_apply_quality(int chn, int quality)
 {
     if (quality < 1)   quality = 1;
     if (quality > 100) quality = 100;
-#if defined(PLATFORM_T10) || defined(PLATFORM_T33)
+#if defined(PLATFORM_T3X)
+    /* jpegQp 0..98, higher = finer (OpenIMP: quality index 98 - jpegQp);
+     * linear from 1..100, not measured against the IJG scale */
+    int qp = quality * 98 / 100;
+    if (IMP_Encoder_SetJpegQp(chn, qp) != 0)
+        LOGW(MOD,"IMP_Encoder_SetJpegQp(chn%d,%d) failed (JPEG left at default)", chn, qp);
+    else
+        LOGD(MOD,"JPEG chn%d quality %d -> jpegQp %d", chn, quality, qp);
+#elif defined(PLATFORM_T10)
     /* prudynt-t special-cases exactly T10 ("fix for bad jpeg image quality on
      * T10 based cameras": user_ql_en=0, i.e. leave the SDK's own default table
      * alone) - a custom table there makes JPEG WORSE, not just unconfirmed, so
      * report honestly instead of guessing or (as before) silently dropping it. */
     (void)chn;
-    /* T33: no IMP_Encoder_SetJpegeQl, only SetJpegQp (mapping unmeasured) */
-    LOGW(MOD,"jpeg.quality=%d not applied on this SoC, SDK default kept",
+    LOGW(MOD,"jpeg.quality=%d not applied on T10, SDK default kept",
          quality);
 #else
     /* T20/T21/T23/T30: fill the qtable's first 128 bytes - 64 luma then 64
@@ -4485,7 +4493,7 @@ static int jpeg_enc_create(int chn, int w, int h, int quality, int fps)
     (void)fps;
     a.encAttr.enType=PT_JPEG;
     a.encAttr.picWidth=w; a.encAttr.picHeight=h;
-#if defined(PLATFORM_T33)
+#if defined(PLATFORM_T3X)
     /* jpegQp 0 is the lowest quality; out of range picks the SDK default */
     a.rcAttr.attrRcMode.rcMode = ENC_RC_MODE_FIXQP;
     a.rcAttr.attrRcMode.attrJPEGFixQp.qp = (uint32_t)-1;
@@ -6496,6 +6504,8 @@ int hal_isp_exposure(hal_isp_expo *out)
 /* open-tx-isp tx_isp_tuning_t41_ae_expr_pack() fills these offsets */
 #if defined(PLATFORM_T40)
 _Static_assert(sizeof(IMPISPAEExprInfo) == 220, "IMPISPAEExprInfo size");
+#elif defined(PLATFORM_T3X)
+_Static_assert(sizeof(IMPISPAEExprInfo) == 204, "IMPISPAEExprInfo size");
 #else
 _Static_assert(sizeof(IMPISPAEExprInfo) == 232, "IMPISPAEExprInfo size");
 #endif
@@ -6504,7 +6514,9 @@ _Static_assert(offsetof(IMPISPAEExprInfo, AeAGain) == 28, "AeAGain");
 _Static_assert(offsetof(IMPISPAEExprInfo, AeMinIntegrationTime) == 72, "AeMinIntegrationTime");
 _Static_assert(offsetof(IMPISPAEExprInfo, AeMaxIntegrationTime) == 88, "AeMaxIntegrationTime");
 _Static_assert(offsetof(IMPISPAEExprInfo, AeMaxAGain) == 92, "AeMaxAGain");
+#if !defined(PLATFORM_T3X)
 _Static_assert(offsetof(IMPISPAEExprInfo, TotalGainDb) == 204, "TotalGainDb");
+#endif
 #endif
 int hal_isp_ae_info(hal_isp_ae *out)
 {
@@ -6521,7 +6533,15 @@ int hal_isp_ae_info(hal_isp_ae *out)
     out->it_max = e.AeMaxIntegrationTime;
     out->again = e.AeAGain;
     out->again_max = e.AeMaxAGain;
+#if defined(PLATFORM_T3X)
+    /* no TotalGainDb: the three gains, each linear x1024 */
+    double tg = (double)e.AeAGain / 1024.0 *
+                (e.AeDGain ? (double)e.AeDGain / 1024.0 : 1.0) *
+                (e.AeIspDGain ? (double)e.AeIspDGain / 1024.0 : 1.0);
+    out->total_log2_q16 = tg > 1.0 ? (uint32_t)(log2(tg) * 65536.0 + 0.5) : 0;
+#else
     out->total_log2_q16 = e.TotalGainDb;
+#endif
     return 0;
 #else
     (void)out; return -1;
@@ -6671,7 +6691,7 @@ int hal_enc_rc_read(int enc_chn, hal_enc_rc *out)
         snprintf(out->mode,sizeof out->mode,"%d",(int)m.rcMode);
         break;
     }
-#elif defined(PLATFORM_T33)
+#elif defined(PLATFORM_T3X)
     (void)codec;
     switch (m.rcMode){
     case ENC_RC_MODE_FIXQP:
