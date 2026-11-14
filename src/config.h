@@ -12,6 +12,8 @@
  * GET /control at the size of the privacy masks */
 #define MS_MAX_ROI     4
 #define MS_MAX_STR     64
+#define IMAGE_MAX_AGAIN_DEF 160    /* the stack's own ceilings: the sensor bin's caps */
+#define IMAGE_MAX_DGAIN_DEF 80
 
 enum ms_vcodec { MS_VC_H264=0, MS_VC_H265=1 };
 enum ms_acodec { MS_AC_NONE=0, MS_AC_AAC=1, MS_AC_PCMU=2, MS_AC_PCMA=3,

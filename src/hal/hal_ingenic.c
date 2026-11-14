@@ -452,6 +452,26 @@ static int isp_apply_image(const char *k);
  * as soon as the caller's frame loop is actually delivering. */
 static void ae_it_max_arm(void);
 static void fcrop_stream_kick(void);
+/* the driver reloads the sensor bin's gain caps when a running-mode change
+ * latches (Lu-Fi/openimp#254), which can be frames after the Set: non-default
+ * caps are written again from the frame path once chn0 delivers */
+#define GCAP_FRAMES 15
+static int g_gcap_due;              /* chn0 frames left until that write, 0 = none */
+static int gcap_custom(void)
+{
+    return g_hcfg && (g_hcfg->image.max_again != IMAGE_MAX_AGAIN_DEF ||
+                      g_hcfg->image.max_dgain != IMAGE_MAX_DGAIN_DEF);
+}
+/* under g_isp_lock */
+static void gcap_apply(void)
+{
+    if (g_hcfg->image.max_again != IMAGE_MAX_AGAIN_DEF) isp_apply_image("max_again");
+    if (g_hcfg->image.max_dgain != IMAGE_MAX_DGAIN_DEF) isp_apply_image("max_dgain");
+}
+static void gcap_arm(void)
+{
+    if (gcap_custom()) __atomic_store_n(&g_gcap_due, GCAP_FRAMES, __ATOMIC_RELAXED);
+}
 /* Re-latch the chn0 state a real EnableChn is suspected to wipe;
  * shared by fs_use()'s enable edge and fs_recycle(). */
 static void fs_edge_relatch(int chn)
@@ -484,6 +504,7 @@ static void fs_edge_relatch(int chn)
         isp_apply_image("vflip");
         isp_apply_image("running_mode");
         pthread_mutex_unlock(&g_isp_lock);
+        gcap_arm();
         /* image.ae_it_max_us is reset by this same edge but must NOT be written
          * here: the enable edge is before any frame has been delivered, and the
          * SDK measurably ignores a cap written into a pipeline that is not
@@ -1876,11 +1897,12 @@ static int isp_apply_image(const char *k)
     /* max_again is log2 x32 as on the classic SoCs; 160 = the stack's own ceiling */
     if (!strcmp(k,"max_again")){
         static int touched;
-        if (im->max_again == 160 && !touched) return 1;
+        static uint32_t said;
+        if (im->max_again == IMAGE_MAX_AGAIN_DEF && !touched) return 1;
         IMPISPAEExprInfo e; memset(&e,0,sizeof e);
         if (IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN,&e) != 0){
             LOGW(MOD,"GetAeExprInfo failed - max_again not applied"); return 1; }
-        e.AeMaxAGainMode = im->max_again == 160 ? IMPISP_TUNING_OPS_TYPE_AUTO
+        e.AeMaxAGainMode = im->max_again == IMAGE_MAX_AGAIN_DEF ? IMPISP_TUNING_OPS_TYPE_AUTO
                                                 : IMPISP_TUNING_OPS_TYPE_MANUAL;
         float g = 1024.0f;
         for (int i = 0; i < im->max_again; i++) g *= 1.0218971f;  /* 2^(1/32) */
@@ -1888,11 +1910,14 @@ static int isp_apply_image(const char *k)
         int rc = IMP_ISP_Tuning_SetAeExprInfo(IMPVI_MAIN,&e);
         if (rc) { LOGW(MOD,"SetAeExprInfo(max_again=%d) failed (rc=%d)", im->max_again, rc); return 1; }
         touched = 1;
-        __atomic_store_n(&g_ae_agcap, im->max_again != 160, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_ae_agcap, im->max_again != IMAGE_MAX_AGAIN_DEF, __ATOMIC_RELAXED);
         memset(&e,0,sizeof e);
-        if (IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN,&e) == 0)
+        if (IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN,&e) == 0 &&
+            (e.AeMaxAGain | (uint32_t)e.AeMaxAGainMode << 31) != said) {
+            said = e.AeMaxAGain | (uint32_t)e.AeMaxAGainMode << 31;
             LOGI(MOD,"max_again=%d: AE analog gain ceiling %u (x1024), mode %d",
                  im->max_again, e.AeMaxAGain, (int)e.AeMaxAGainMode);
+        }
         return 1;
     }
 #endif
@@ -2443,6 +2468,12 @@ static void ae_it_max_check(int64_t now)
  * lock, so it is not worth an atomic. */
 static inline void ae_it_max_on_frame(int fs_chn)
 {
+    if (fs_chn == 0 && __atomic_load_n(&g_gcap_due, __ATOMIC_RELAXED) > 0 &&
+        __atomic_sub_fetch(&g_gcap_due, 1, __ATOMIC_RELAXED) == 0) {
+        pthread_mutex_lock(&g_isp_lock);
+        gcap_apply();
+        pthread_mutex_unlock(&g_isp_lock);
+    }
 #ifdef AE_IT_SUPERVISE
     if (fs_chn != 0) return;
     /* opt-in, default off; a removal of ours still being verified keeps it on */
@@ -5470,11 +5501,9 @@ static int ing_control(const char *key, const char *val)
         if (ok && !strcmp(k,"running_mode")){
             isp_apply_image("hflip");
             isp_apply_image("vflip");
-            /* the driver reloads the sensor bin's gain caps on a mode switch
-             * (Lu-Fi/openimp#254); defaults are left to the bin */
-            const ms_image_cfg *im = &g_hcfg->image;
-            if (im->max_again != 160) isp_apply_image("max_again");
-            if (im->max_dgain != 80)  isp_apply_image("max_dgain");
+            /* defaults are left to the bin */
+            gcap_apply();
+            gcap_arm();
 #ifdef AE_IT_SUPERVISE
             /* a real day/night switch may change the sensor mode under the AE
              * cap: its uncapped reference goes stale and the supervisor is
