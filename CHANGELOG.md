@@ -6,6 +6,25 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- T32 and T33 builds (experimental, OpenIMP): `PLATFORM=T32` / `T33`
+  compile against the T32 2.2.0 / T33 2.0.2.1 headers (header submodule
+  now at gtxaspec/ingenic-headers 5bacc0f, which adds T32 2.2.0), with the
+  T41 form of the ISP sensor/tuning API and the classic encoder path with
+  their own rate-control structs. `image.max_again`, the day/night reading
+  (total gain and integration time) and its AE reserve come from
+  `AeExprInfo`, because `/proc` has no AE lines on the open stack;
+  `jpeg.quality` maps linearly to `IMP_Encoder_SetJpegQp` (0..98). No ISP
+  WB/NR/AE-compensation keys, ALC gain, rotation or ROI. First camera test
+  on a T33L (OpenIMP): main and sub stream, snapshot and `/control` work,
+  5.5 min without drops; `jpeg.quality` 95 comes out near q78, and the
+  day/night reading needs OpenIMP's `AeExprInfo` (Lu-Fi/openimp#527, #531).
+  T32 has not run on a camera. T31/T40/T41 binaries are unchanged
+  (Lu-Fi/openimp#515).
+- Build: a direct `make` adds `-fstack-protector-strong` only when the
+  toolchain links it (the thingino uClibc toolchain has no libssp).
+
 ### Fixed
 
 - Day/night: a colour look on a darker scene ("colour moved while the scene

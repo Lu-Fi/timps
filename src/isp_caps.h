@@ -25,15 +25,21 @@
 #ifndef MS_ISP_CAPS_H
 #define MS_ISP_CAPS_H
 
+/* T32 (2.2.0) and T33 (2.0.2.1) share every struct and call timps uses */
+#if defined(PLATFORM_T32)||defined(PLATFORM_T33)
+#define PLATFORM_T3X 1
+#endif
+
 #if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)|| \
     defined(PLATFORM_T23)||defined(PLATFORM_T30)||defined(PLATFORM_T31)|| \
-    defined(PLATFORM_T40)||defined(PLATFORM_T41)||defined(PLATFORM_C100)
+    defined(PLATFORM_T3X)||defined(PLATFORM_T40)||defined(PLATFORM_T41)|| \
+    defined(PLATFORM_C100)
 #define ISP_PLATFORM_KNOWN 1
 #endif
 
-/* T40/T41: reworked tuning API (IMPVI_NUM + pointer arguments) with a
+/* T32/T33/T40/T41: reworked tuning API (IMPVI_NUM + pointer arguments) with a
  * reduced tuning feature set; flips go through SetHVFLIP. */
-#if defined(PLATFORM_T40)||defined(PLATFORM_T41)
+#if defined(PLATFORM_T3X)||defined(PLATFORM_T40)||defined(PLATFORM_T41)
 #define ISP_NEW_TUNING_API 1
 #endif
 
@@ -134,6 +140,13 @@
 #define ISP_HAS_AECOMP 1
 #define ISP_HAS_AE_MAX_AGAIN 1
 /* read only while a max_again cap is set: /proc then overstates the reserve */
+#define ISP_HAS_AE_EXPR_INFO 1
+#endif
+
+/* T32/T33: AeExprInfo with the T40 head offsets but no TotalGainDb;
+ * max_again as on T40 */
+#if defined(PLATFORM_T3X)
+#define ISP_HAS_AE_MAX_AGAIN 1
 #define ISP_HAS_AE_EXPR_INFO 1
 #endif
 

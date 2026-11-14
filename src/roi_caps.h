@@ -27,7 +27,9 @@ static inline const char *cap_tier_name(int t)
 
 #if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)|| \
     defined(PLATFORM_T23)||defined(PLATFORM_T30)||defined(PLATFORM_T31)|| \
-    defined(PLATFORM_T40)||defined(PLATFORM_T41)||defined(PLATFORM_C100)
+    defined(PLATFORM_T32)||defined(PLATFORM_T33)|| \
+    defined(PLATFORM_T40)||defined(PLATFORM_T41)|| \
+    defined(PLATFORM_C100)
 #define ROI_PLATFORM_KNOWN 1
 #endif
 

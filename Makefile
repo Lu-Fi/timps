@@ -129,6 +129,10 @@ else ifeq ($(PLATFORM),T41)
 # 1.2.6 = the libimp thingino ships for T41 (1.2.0 is layout-compatible for
 # everything timps uses, but keep header and lib on the same version).
 IMP_INC ?= $(INC_ROOT)/T41/1.2.6/en
+else ifeq ($(PLATFORM),T32)
+IMP_INC ?= $(INC_ROOT)/T32/2.2.0/en
+else ifeq ($(PLATFORM),T33)
+IMP_INC ?= $(INC_ROOT)/T33/2.0.2.1/en
 else ifeq ($(PLATFORM),T20)
 IMP_INC ?= $(INC_ROOT)/T20/3.12.0/zh
 PLATFORM_CFLAGS += -DFQ_MAX_BYTES=1048576   # P-08: see T21 note above
@@ -248,7 +252,7 @@ TARGET_OBJS   := $(notdir $(TARGET_ALLSRC:.c=.o))
 #     FORTIFY switch.
 #   * -fstack-protector-strong needs libssp in the toolchain. The host and the
 #     thingino musl toolchain have it; the thingino uClibc toolchain is built
-#     --disable-libssp (build.sh disables SSP there and manages this itself).
+#     --disable-libssp, so SSP_CFLAGS probes a link first.
 #   * -Wl,-z,relro -Wl,-z,now (full RELRO) and -Wl,-z,noexecstack (NX stack)
 #     are linker-only and safe with -no-pie under both libcs.
 #
@@ -261,7 +265,11 @@ HARDEN  ?= 1
 FORTIFY ?= 1
 
 ifeq ($(HARDEN),1)
-HARDEN_CFLAGS  := -fstack-protector-strong $(if $(filter 1,$(FORTIFY)),-D_FORTIFY_SOURCE=2)
+# only where the toolchain links it (the thingino uClibc one has no libssp)
+SSP_CC     := $(if $(filter all target,$(or $(MAKECMDGOALS),all)),$(CC),$(HOSTCC))
+SSP_CFLAGS := $(shell printf 'void f(char *p){p[0]=0;}int main(void){char b[64];f(b);return b[1];}' | \
+              $(SSP_CC) -fstack-protector-strong -x c - -o /dev/null 2>/dev/null && echo -fstack-protector-strong)
+HARDEN_CFLAGS  := $(SSP_CFLAGS) $(if $(filter 1,$(FORTIFY)),-D_FORTIFY_SOURCE=2)
 HARDEN_LDFLAGS := -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack
 else
 HARDEN_CFLAGS  :=
