@@ -27,6 +27,14 @@ semantic versioning.
 
 ### Fixed
 
+- Day/night: a camera could stay in night with the lamps on when the first
+  look after a failed check read the AE at its limit (railed). That look
+  learned no bar, so the next look, the one that saw the lamp, only learned
+  and asked nothing. A railed dark reading now learns the bar too. Seen on a
+  T10 with the vendor AE graph, where the antiflicker ceiling lands on 895 of
+  896 lines in the dark; replay family `railed_dark_then_lamp`: day after
+  31-36 s instead of never; the other 85 family pairs unchanged
+  (Lu-Fi/openimp#609).
 - Day/night: a colour look on a darker scene ("colour moved while the scene
   got darker") now takes the same skip test as every other look and judges
   with a fresh creep flag; before, it blinked the IR even when the lit level
