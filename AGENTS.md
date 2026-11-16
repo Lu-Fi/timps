@@ -39,6 +39,10 @@ If you are answering a user's question about timps, read in this order:
    Their live feature matrix (https://lu-fi.github.io/openimp/feature-matrix.html)
    wins over any copied OpenIMP state in the timps docs.
 
+If you are changing timps itself (code, tests on a camera), read
+[`docs/ai/development.md`](docs/ai/development.md): testing against vendor
+libimp and OpenIMP, test binaries without flashing, vendor-library pitfalls.
+
 Rules that avoid wrong answers:
 
 - Quote exact key names, paths and endpoints; do not paraphrase them.
