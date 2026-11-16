@@ -220,7 +220,7 @@ in the POST reply's `deferred_keys`.
 | `audio.agc` | bool | 0 | 0/1 | Restart-only | Automatic gain control on/off (same race-avoidance rationale as `high_pass`). |
 | `audio.agc_target_dbfs` | int | 10 | 0–31 | Restart-only | AGC target level (dBFS). |
 | `audio.agc_compression_db` | int | 0 | 0–90 | Restart-only | AGC compression gain (dB). |
-| `audio.ns` | int | 0 | 0–3 | Restart-only | Noise suppression level (0 = off). |
+| `audio.ns` | int | 0 | 0–3 | Restart-only | Noise suppression level (0 = off). With the vendor libimp on T31/T40/T41 NS also turns the high-pass filter on (since the next release). |
 | `audio.force_stereo` | bool | 0 | 0/1 | Restart-only | Separate companion field to `channels=2` (not an alias — both are settable independently). |
 | `audio.spk_enabled` | bool | 1 | 0/1 | **Live** (at the next AO open; `USE_PLAY`/`USE_BACKCHANNEL` builds) | Master speaker-output enable. Read by `speaker.c` every time it is about to open the `IMP_AO` device, so `0` silences the *next* backchannel/play session without a restart; a session already holding the speaker keeps it until it ends. |
 | `audio.backchannel` | bool | 0 | 0/1 | Restart-only | Enable the ONVIF two-way audio backchannel (`USE_BACKCHANNEL` build). |

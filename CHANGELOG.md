@@ -27,6 +27,17 @@ semantic versioning.
 
 ### Fixed
 
+- Audio with the vendor libimp on T31, T40 and T41: `audio.ns`, `audio.agc`
+  and `audio.high_pass` had no effect, because the vendor library applies them
+  only to AI device 1 and timps recorded on device 0 (Lu-Fi/openimp#605).
+  These builds now record on device 1. On that path NS without the high-pass
+  filter stopped the audio on T31 and did nothing on T40, so `audio.ns` > 0
+  now switches the high-pass filter on as well (log warning). Measured on a
+  T40 and a T31X with the vendor stack: device 0 unchanged by any setting;
+  device 1 with HPF + NS removes the DC offset (T40: about 21 dB less noise).
+  OpenIMP builds and other vendor SoCs keep device 0. AGC on device 1 is
+  not measured.
+
 - Day/night: a colour look on a darker scene ("colour moved while the scene
   got darker") now takes the same skip test as every other look and judges
   with a fresh creep flag; before, it blinked the IR even when the lit level

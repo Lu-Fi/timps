@@ -296,8 +296,16 @@ static int          g_ach    = 1;            /* effective channel count publishe
                                               * (the mono AI capture duplicated
                                               * to L=R, encoded as 2-ch AAC).
                                               * AAC only - G.711 stays mono. */
+/* Vendor libimp (T31/T40/T41) binds EnableNs/Agc/Hpf/Hs to AI device 1 only
+ * and still returns 0 on device 0 (openimp #605). OpenIMP applies them to the
+ * recording device. Other vendor SoCs are not verified and stay on 0. */
+#if !defined(USE_OPENIMP) && (defined(PLATFORM_T31) || defined(PLATFORM_T40) || defined(PLATFORM_T41))
+#define AI_DEV 1
+#else
+#define AI_DEV 0
+#endif
 static IMPAudioIOAttr g_aio;                 /* attr accepted by IMP_AI_SetPubAttr */
-static volatile int   g_ai_up = 0;           /* AI dev 0/chn 0 enabled (audio_thread) */
+static volatile int   g_ai_up = 0;           /* AI dev AI_DEV/chn 0 enabled (audio_thread) */
 #if defined(USE_CONTROL) || defined(USE_BACKCHANNEL) || defined(USE_PLAY)
 /* g_ai_lock serializes the live AI parameter writes (volume/gain/alc_gain) that
  * /control applies directly. The DSP module toggles (HPF/AGC/NS) are NOT applied
@@ -4636,11 +4644,11 @@ static int ai_rate_enum(int sr)
 static int ai_apply_key(const char *k)
 {
     const ms_audio_cfg *a = &g_hcfg->audio;
-    if (!strcmp(k,"volume")){ IMP_AI_SetVol(0, 0, a->volume); return 1; }
-    if (!strcmp(k,"gain"))  { IMP_AI_SetGain(0, 0, a->gain);  return 1; }
+    if (!strcmp(k,"volume")){ IMP_AI_SetVol(AI_DEV, 0, a->volume); return 1; }
+    if (!strcmp(k,"gain"))  { IMP_AI_SetGain(AI_DEV, 0, a->gain);  return 1; }
     if (!strcmp(k,"alc_gain")){
 #ifdef AUDIO_HAS_ALC_GAIN
-        IMP_AI_SetAlcGain(0, 0, a->alc_gain); return 1;
+        IMP_AI_SetAlcGain(AI_DEV, 0, a->alc_gain); return 1;
 #else
         return 0;
 #endif
@@ -4669,6 +4677,23 @@ static int ai_apply_key(const char *k)
         return 1;                            /* audio_thread gates the publish
                                               * on g_hcfg->audio.mute per frame */
     return 0;
+}
+
+/* On the vendor device-1 path NS without HPF stops the AI frames (T31) or
+ * does nothing (T40), so NS always brings HPF along there. */
+static void ai_apply_filters(void)
+{
+    const ms_audio_cfg *a = &g_hcfg->audio;
+    int hpf = a->high_pass;
+#if AI_DEV == 1
+    if (a->ns > 0 && !hpf) {
+        LOGW(MOD, "audio.ns needs the high-pass filter on this libimp: audio.high_pass enabled");
+        hpf = 1;
+    }
+#endif
+    if (hpf)       IMP_AI_EnableHpf(&g_aio);
+    if (a->agc)    ai_apply_key("agc");
+    if (a->ns > 0) ai_apply_key("ns");
 }
 
 /* ---- audio.codec2: 16 kHz -> 8 kHz for the secondary G.711 encode -------
@@ -4711,7 +4736,7 @@ static size_t a2_decim2(a2_state *st, const int16_t *in, size_t n,
 static void *audio_thread(void *arg)
 {
     (void)arg;
-    int dev=0, chnid=0;
+    int dev=AI_DEV, chnid=0;
     int use_aac = (g_acodec==MS_AC_AAC);
 #ifdef USE_STREAM_OPUS
     int use_opus = (g_acodec==MS_AC_OPUS);
@@ -4807,9 +4832,7 @@ static void *audio_thread(void *arg)
     ai_apply_key("gain");
     if (g_hcfg->audio.alc_gain > 0 && !ai_apply_key("alc_gain"))
         LOGW(MOD,"audio.alc_gain unsupported on this platform (ignored)");
-    if (g_hcfg->audio.high_pass) ai_apply_key("high_pass");
-    if (g_hcfg->audio.agc)       ai_apply_key("agc");
-    if (g_hcfg->audio.ns > 0)    ai_apply_key("ns");
+    ai_apply_filters();
     g_ai_up = 1;
 
     /* --- now open faac at the samplerate the AI actually accepted --- */
@@ -4954,9 +4977,7 @@ static void *audio_thread(void *arg)
         ai_apply_key("volume");
         ai_apply_key("gain");
         if (g_hcfg->audio.alc_gain > 0) ai_apply_key("alc_gain");
-        if (g_hcfg->audio.high_pass)    ai_apply_key("high_pass");
-        if (g_hcfg->audio.agc)          ai_apply_key("agc");
-        if (g_hcfg->audio.ns > 0)       ai_apply_key("ns");
+        ai_apply_filters();
         g_ai_up = 1;
 #if defined(USE_CONTROL) || defined(USE_BACKCHANNEL) || defined(USE_PLAY)
         pthread_mutex_unlock(&g_ai_lock);
@@ -6896,7 +6917,7 @@ int hal_ao_open(int want_rate)
 
     /* Item-3: opt-in Acoustic Echo Cancellation (audio.aec, default off). Engage
      * only when BOTH directions are live - AEC subtracts the AO output from the
-     * AI capture, so it needs the mic (AI dev0/chn0, g_ai_up) running as well as
+     * AI capture, so it needs the mic (AI AI_DEV/chn0, g_ai_up) running as well as
      * the speaker we just brought up (AO dev0/chn0). If the AI isn't up yet (e.g.
      * a play-only session) AEC is skipped for this AO session. g_aec_on records
      * that we actually enabled it, so hal_ao_close disables exactly what we
@@ -6905,7 +6926,7 @@ int hal_ao_open(int want_rate)
     if (g_hcfg){ config_str_lock(); aec_on = g_hcfg->audio.aec; config_str_unlock(); }  /* F-02: cold read under lock */
     if (aec_on){
         /* Item-1: serialize the AEC module create against audio_thread's
-         * concurrent GetFrame on the same AI dev0/chn0 (see g_ai_lock).
+         * concurrent GetFrame on the same AI AI_DEV/chn0 (see g_ai_lock).
          *
          * Found by review: g_ai_up used to be read here BEFORE taking the
          * lock, then trusted for the IMP_AI_EnableAec call below it without
@@ -6919,7 +6940,7 @@ int hal_ao_open(int want_rate)
          * genuinely still up. */
         pthread_mutex_lock(&g_ai_lock);
         if (g_ai_up) {
-            int aec_rc = IMP_AI_EnableAec(0, 0, 0, 0);
+            int aec_rc = IMP_AI_EnableAec(AI_DEV, 0, 0, 0);
             pthread_mutex_unlock(&g_ai_lock);
             if (aec_rc == 0){
                 g_aec_on = 1;
@@ -6974,7 +6995,7 @@ void hal_ao_close(int drain)
          * UAF/SIGSEGV in libaudioProcess.so (the same hazard HPF/AGC/NS avoid by
          * being boot-only; AEC can't be, it is AO-session-scoped). */
         pthread_mutex_lock(&g_ai_lock);
-        IMP_AI_DisableAec(0, 0);
+        IMP_AI_DisableAec(AI_DEV, 0);
         pthread_mutex_unlock(&g_ai_lock);
         g_aec_on = 0;
         LOGI(MOD, "AEC disabled");

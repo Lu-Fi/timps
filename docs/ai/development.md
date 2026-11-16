@@ -121,8 +121,10 @@ timeout -k 5 45 ffmpeg -nostdin -timeout 10000000 -rtsp_transport tcp \
     delivered no audio frames at all** (reproduced twice; RTSP clients wait
     for audio forever).
   OpenIMP applies the algorithms to the recording device, so device 0 works
-  there. Not changed in timps yet (moving to device 1 needs a guard that
-  never enables NS without HPF on the vendor stack).
+  there. Since the next release timps records on device 1 for vendor builds
+  of T31/T40/T41 (`AI_DEV` in `src/hal/hal_ingenic.c`) and switches HPF on
+  whenever NS is on. Other vendor SoCs (T10-T30, T23, T32/T33) are not
+  verified and stay on device 0.
 - `IMP_ISP_Tuning_GetAeExpList` hangs on the vendor T40 driver: do not call it.
 
 ## 7. Day/night tests

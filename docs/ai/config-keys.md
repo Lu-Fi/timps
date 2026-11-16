@@ -746,7 +746,7 @@ from `GET /control` instead.
 | `audio.gain` | int | `25` | 0..31 | **live** | `IMP_AI_SetGain`. |
 | `audio.high_pass` | bool | `1` | — | restart | HPF. Restart-required **by necessity**: libimp runs HPF/AGC/NS on its own internal record thread and `IMP_AI_Disable*` frees that module state with no lock — toggling it live races the vendor thread into a use-after-free inside `libaudioProcess.so`. |
 | `audio.agc` | bool | `0` | — | restart | Same UAF reason as `high_pass`. |
-| `audio.ns` | int | `0` | 0..3 | restart | `0` off, `1..3` = level. Same UAF reason. |
+| `audio.ns` | int | `0` | 0..3 | restart | `0` off, `1..3` = level. Same UAF reason. **Vendor libimp on T31/T40/T41 (since the next release):** NS > 0 also switches the high-pass filter on, whatever `audio.high_pass` says (NS without HPF stops the audio on vendor T31); before that release `audio.ns`, `audio.agc` and `audio.high_pass` had no effect with the vendor libimp on these SoCs (Lu-Fi/openimp#605). |
 | `audio.alc_gain` | int | `0` | 0..7 | **live**, capability-gated | `IMP_AI_SetAlcGain` analog PGA. **Only on T21, T31, C100** (`AUDIO_HAS_ALC_GAIN`). A T10 build compiles against T20 headers, so T10 has no ALC either. |
 | `audio.agc_target_dbfs` | int | `10` | 0..31 | restart | AGC `TargetLevelDbfs`. |
 | `audio.agc_compression_db` | int | `0` | 0..90 | restart | AGC `CompressionGaindB`. |
