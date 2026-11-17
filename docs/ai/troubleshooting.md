@@ -1061,7 +1061,7 @@ to — no config fixes that.
 
 ### 3.2 Purple / pink / magenta / IR-tinted picture
 
-Two distinct causes; separate them before advising.
+Three distinct causes; separate them before advising.
 
 **(a) `image.running_mode` forced while the board optics disagree.** In
 timps's model (see `docs/wiki/Day-Night.md`) `image.running_mode` is *only*
@@ -1085,6 +1085,16 @@ flip-compensated code has to be set in `sensor_probe()`. A camera that is
 mirrored *and* mis-coloured is a sensor-driver problem, not a timps config
 problem. `/proc/jz/isp/isp-m0` shows the cached pattern. **(unverified in
 this repo — it is a kernel/sensor-driver issue outside `src/`.)**
+
+**(c) timps restarted with `daynight.enabled = 0` after a night.** With the
+automaton off timps never runs `daynight.switch_cmd`: the IR-cut filter stays
+where it was, while the ISP starts in `image.running_mode` (day by default).
+A camera boot is safe (`/etc/init.d/S06ircut` puts the filter in at boot), but
+a streamer restart without a reboot after the camera was in night (also a
+kernel-module swap on a test camera) leaves the filter out under a day
+pipeline. Fix: `ircut on` (or `daynight day`), or reboot; with
+`daynight.enabled = 1` timps drives the filter itself at start
+(`switching to day (boot)`). Seen on a T10 in a light box, 2026-11-16.
 
 ### 3.3 Day/night never switches, or flaps
 
