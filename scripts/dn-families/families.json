@@ -4613,6 +4613,37 @@
     "max_wrong_mode_s": 1800,
     "max_switches": 12
    }
+  },
+  {
+   "name": "railed_dark_then_lamp",
+   "title": "the AE rails in the dark (T10 vendor AE graph, IT 895/896 at full gains), so the first look learns from a railed reading; the lamp look after it asks: day within the colour look (Lu-Fi/openimp#609)",
+   "duration_s": 3000,
+   "initial_mode": "night",
+   "timelines": {
+    "box609": [
+     [
+      0,
+      "box_dark"
+     ],
+     [
+      600,
+      "box_dark"
+     ],
+     [
+      601,
+      "box_lamp"
+     ],
+     [
+      3000,
+      "box_lamp"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 420,
+    "max_switches": 4,
+    "max_on_s": 420
+   }
   }
  ]
 }

@@ -1720,7 +1720,10 @@ static void *dn_thread(void *arg)
             int ok = !dn_clipped(sm.headroom);
             if (ok) Nq = N;
             Nk = ok ? N : -1.0f;
-            int learn = ok && B == 0.0f;    /* this look only learns the bar: it judges nothing */
+            /* this look only learns the bar: it judges nothing. A railed
+             * dark reading learns too, or the next look (the lamp) would
+             * only learn (Lu-Fi/openimp#609) */
+            int learn = N > 0.0f && B == 0.0f;
             if (learn) B = N * SD_B_REL;
             float bar = sd_look_bar(dn, why, B, K, F, Fn, Kf, now - Kf_at, Nf, creep);
             ubar = bar;

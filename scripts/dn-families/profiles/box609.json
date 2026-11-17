@@ -1,0 +1,10 @@
+{
+ "name": "box609",
+ "camera": "SecuPlug T10/jxh42 in the light box, open driver with the vendor AE graph: in the dark the AE rails (IT 895/896, full gains)",
+ "map": {"kind": "bare"},
+ "color": {"base": [2600, 2184], "shift": [0.0, 0.0], "noise_pct": 0.5},
+ "scenes": {
+  "box_dark": {"day": 300000, "lit": 300, "dark": 300000, "railed": true, "src": "2026-11-16 box run aeB-3000: look dark 8544 at IT 895/896 and full gains (railed)"},
+  "box_lamp": {"day": 516, "lit": 290, "dark": 300, "tint": [17.3, 0.0], "src": "same run, lamps on: look dark 279, colour moved 17.3 %; check 516 from the kaj-3000 run"}
+ }
+}
