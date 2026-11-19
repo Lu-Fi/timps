@@ -299,6 +299,7 @@ FAACLIB ?= -l:libfaac.a
 all: target
 
 target:
+	@test -f "$(IMP_INC)/imp/imp_isp.h" || { echo "error: IMP headers not found: $(IMP_INC)/imp/imp_isp.h (empty include/ submodule? run 'git submodule update --init' or set IMP_INC); the compiler would fall back to the sysroot's headers" >&2; exit 1; }
 	$(CC) $(CFLAGS) $(LTO_FLAGS) $(if $(SYSROOT),--sysroot=$(SYSROOT)) \
 	  $(if $(filter 1,$(USE_FAAC)),-DUSE_FAAC) \
 	  $(if $(filter 1,$(USE_OPENIMP)),-DUSE_OPENIMP) \

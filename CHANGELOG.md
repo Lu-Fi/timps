@@ -24,6 +24,11 @@ semantic versioning.
   (Lu-Fi/openimp#515).
 - Build: a direct `make` adds `-fstack-protector-strong` only when the
   toolchain links it (the thingino uClibc toolchain has no libssp).
+- Build: `make target` stops with an error when the IMP headers are missing
+  (`$(IMP_INC)/imp/imp_isp.h`, e.g. an override source tree with an empty
+  `include/` submodule). Before, the compiler fell back to the sysroot's
+  headers without a word; with OpenIMP on T30 that broke the build
+  (`IMPISPITAttr` unknown), elsewhere it could build against other structs.
 
 ### Fixed
 
