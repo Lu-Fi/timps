@@ -4855,6 +4855,19 @@ static void *audio_thread(void *arg)
 #else
         faac_params_init(&fp);
 #endif
+#if defined(FAAC_VERSION_MAJOR) && (FAAC_VERSION_MAJOR >= 3)
+        /* ABI 3 (faac 3.0): whole-stream bit_rate, flags, and AUTO would pick
+         * HE-AAC at low rates while the SDP/esds config here is AAC-LC. TNS is
+         * cheap since 3.0 (faac 2.2 had it off for CPU). */
+        fp.sample_rate   = (uint32_t)g_asr;
+        fp.channels      = (uint32_t)g_ach;     /* 2 = simulated stereo (dual-mono) */
+        fp.object_type   = FAAC_OBJ_LC;
+        fp.input_format  = FAAC_INPUT_16BIT;
+        fp.stream_format = FAAC_STREAM_RAW;     /* raw AAC (no ADTS) */
+        fp.flags        |= FAAC_FLAG_TNS;
+        if (g_hcfg->audio.bitrate_kbps>0)
+            fp.bit_rate = (uint32_t)g_hcfg->audio.bitrate_kbps*1000;
+#else
         fp.sample_rate   = (uint32_t)g_asr;
         fp.num_channels  = (uint32_t)g_ach;     /* 2 = simulated stereo (dual-mono) */
         fp.mpeg_version  = FAAC_MPEG4;
@@ -4866,6 +4879,7 @@ static void *audio_thread(void *arg)
          * rate, so a dual-mono stereo stream keeps the configured total */
         if (g_hcfg->audio.bitrate_kbps>0)
             fp.bit_rate = (uint32_t)g_hcfg->audio.bitrate_kbps*1000/(uint32_t)g_ach;
+#endif
         faac_status st = faac_encoder_open(&fp, &faac);
         if (st==FAAC_OK && faac) {
             faac_encoder_info fi; fi.struct_size = sizeof fi;

@@ -24,6 +24,11 @@ semantic versioning.
   (Lu-Fi/openimp#515).
 - Build: a direct `make` adds `-fstack-protector-strong` only when the
   toolchain links it (the thingino uClibc toolchain has no libssp).
+- Build: software AAC (`USE_FAAC`) also builds against faac 3.0 (libfaac
+  ABI 3): whole-stream `bit_rate`, AAC-LC fixed (ABI 3 would pick HE-AAC by
+  itself at low rates), TNS on (cheap since 3.0). faac 2.2, which thingino
+  ships, keeps TNS off and is unchanged. The 3.0 path is compile-checked
+  against the 3.0 header only; no camera has run it.
 - Build: `make target` stops with an error when the IMP headers are missing
   (`$(IMP_INC)/imp/imp_isp.h`, e.g. an override source tree with an empty
   `include/` submodule). Before, the compiler fell back to the sysroot's
