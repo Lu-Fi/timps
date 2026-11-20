@@ -189,6 +189,7 @@ typedef struct {
 typedef struct {
     /* counters for the ctrl_result the caller gets back; see control.h */
     int acc, chg, rej, nopersist, pending;
+    int no_write;           /* {"persist":false}: apply, write nothing */
     /* the "applied" echo, built as JSON while the values are in hand. It records a
      * field whenever the CANONICAL stored value differs from what was POSTed - not
      * when the value CHANGED. The two are not the same, and the difference is
@@ -497,6 +498,7 @@ static int dn_auto_on(void)
 
 static void chg_add(ctrl_scratch_t *sc, ctrl_changes *ch, const char *key, const char *val)
 {
+    if (sc->no_write){ sc->nopersist++; return; }
     for (int i = 0; i < ch->n; i++)
         if (!strcmp(ch->key[i], key)) {
             snprintf(ch->val[i], sizeof ch->val[0], "%s", val);
@@ -998,6 +1000,11 @@ int control_apply_json(const char *json, ctrl_result *res)
     ch->n = 0;
     char v[160];
     char clip[160]; int clip_secs = -1;     /* -1 = no clip requested */
+    /* board scripts (day/night hooks) set values that must not survive a
+     * restart and should not wear the flash */
+    if (get_val(jb, je, "persist", v, sizeof v) &&
+        (!strcmp(v,"false") || !strcmp(v,"0")))
+        sc.no_write = 1;
 
     /* image: nested "image":{...} preferred; the legacy flat keys of the old
      * /control (top-level brightness/... ) keep working via a whole-body scan.

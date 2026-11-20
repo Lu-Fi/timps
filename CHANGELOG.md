@@ -8,6 +8,13 @@ semantic versioning.
 
 ### Added
 
+- `/control`: `sensor.fps` applies live (POST, value > 0): the ISP retimes
+  the sensor without a timps restart; the AE cap reference is re-learned.
+  A top-level `"persist":false` in a POST applies its values without writing
+  `/etc/timps.conf` (counted in `not_persisted`), for board scripts such as a
+  day/night hook that runs the sensor at 15 fps and a softer sharpness at
+  night. Built and host-tested; the live fps change has not run on a camera
+  yet.
 - T32 and T33 builds (experimental, OpenIMP): `PLATFORM=T32` / `T33`
   compile against the T32 2.2.0 / T33 2.0.2.1 headers (header submodule
   now at gtxaspec/ingenic-headers 5bacc0f, which adds T32 2.2.0), with the

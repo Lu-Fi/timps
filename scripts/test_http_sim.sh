@@ -70,6 +70,10 @@ expect "GET persist_pending"           1  "$(curl -s $L | sed -n 's/.*"persist_p
 sleep 4.5
 expect "burst: last value after the window" 13 "$(inconf image.brightness)"
 expect "GET persist_pending drained"   0  "$(curl -s $L | sed -n 's/.*"persist_pending":\([0-9]*\).*/\1/p')"
+npf() { curl -s --max-time 5 -X POST "$L" -d "$1" | sed -n 's/.*"not_persisted":\([0-9]*\).*/\1/p'; }
+expect "persist:false: not_persisted"  1  "$(npf '{"persist":false,"image":{"sharpness":64}}')"
+expect "...applied live"               64 "$(curl -s $L | sed -n 's/.*"sharpness":\([0-9]*\).*/\1/p' | head -1)"
+expect "...not in the file"            "" "$(inconf image.sharpness)"
 post '{"image":{"brightness":14}}' >/dev/null
 post '{"image":{"brightness":15}}' >/dev/null
 expect "restart-required key: pending" 0  "$(post '{"sensor":{"fps":20}}')"

@@ -960,6 +960,14 @@ static void ae_it_max_mode_switch(int running_mode)
     ae_it_max_arm();                    /* the switch may also have reset the cap */
 }
 
+/* A live sensor.fps change moves the VTS and with it the mode's maximum. */
+static void ae_it_max_fps_change(void)
+{
+    if (g_ae_it_cap_lines) g_ae_it_mode_stale = 1;
+    else                   g_ae_it_mode_lines = 0;
+    ae_it_max_arm();
+}
+
 /* One SDK write. restore=1 hands the AE back its mode's own maximum. */
 static int ae_it_write(uint32_t lines, uint32_t min_lines, int restore)
 {
@@ -2495,8 +2503,9 @@ static inline void ae_it_max_on_frame(int fs_chn)
 #endif
 }
 
-/* The driver may refuse or clamp the requested rate; log what it holds. */
-static void isp_set_sensor_fps(int want)
+/* The driver may refuse or clamp the requested rate; log what it holds.
+ * Returns the set call's rc. */
+static int isp_set_sensor_fps(int want)
 {
     int rc, grc = -1;
     uint32_t hn = 0, hd = 0;
@@ -2516,7 +2525,7 @@ static void isp_set_sensor_fps(int want)
     if (grc != 0 || !hd) {
         LOGW(MOD, "sensor fps: requested %d, set rc=%d, readback unavailable (rc=%d)",
              want, rc, grc);
-        return;
+        return rc;
     }
     /* compare as fractions: hn/hd == want */
     if (rc != 0 || hn != (uint32_t)want * hd)
@@ -2525,6 +2534,7 @@ static void isp_set_sensor_fps(int want)
     else
         LOGI(MOD, "sensor fps: requested %d, driver holds %u/%u, set rc=%d",
              want, hn, hd, rc);
+    return rc;
 }
 
 static int isp_init(void)
@@ -5757,6 +5767,19 @@ static int ing_control(const char *key, const char *val)
                      "(takes effect at the next IDR/GOP)", key);
             return 1;
         }
+        LOGI(MOD,"%s persisted, applies on restart", key);
+        return 0;
+    }
+    /* sensor.fps live: the ISP retimes the sensor, the pipeline keeps
+     * running; 0 (auto) is resolved at the next ISP init only */
+    if (!strcmp(key,"sensor.fps") && v > 0){
+        pthread_mutex_lock(&g_isp_lock);
+        int rc = isp_set_sensor_fps(v);
+#ifdef AE_IT_SUPERVISE
+        if (rc == 0) ae_it_max_fps_change();
+#endif
+        pthread_mutex_unlock(&g_isp_lock);
+        if (rc == 0) return 1;
         LOGI(MOD,"%s persisted, applies on restart", key);
         return 0;
     }

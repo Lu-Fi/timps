@@ -736,7 +736,13 @@ Response body (same shape whatever the status):
 - `not_persisted` — applied live but not written: the request changed more
   keys than the 48-slot persist list holds, or the file write failed (full or
   read-only `/etc`). Tell the user to split the request or fix `/etc`; those
-  values are gone after a reboot.
+  values are gone after a reboot. **Since the next release** also every
+  changed key of a request with a top-level `"persist":false` (or `0`): it is
+  applied and announced on `/events` like any other, but `/etc/timps.conf` is
+  not touched, so a restart brings back the file value. Meant for board
+  scripts (a day/night hook setting `sensor.fps` or `image.sharpness` for the
+  night). A restart-only key posted this way is stored in memory only and so
+  never takes effect.
 - `pending` (**since v1.10.1**) — changed keys queued for the rate-limited
   write. timps rewrites `/etc/timps.conf` at most once per 3 s: a change after
   a quiet 3 s is written before the reply (`pending` 0), further changes
