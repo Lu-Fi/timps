@@ -1,0 +1,9 @@
+{
+ "name": "abus",
+ "camera": "ABUS PPIC90520 T30N/IMX307, dark basement, no IR illuminator: the AE rails in the dark",
+ "map": {"kind": "bare"},
+ "scenes": {
+  "dark": {"day": 300000, "lit": 300000, "dark": 300000, "railed": true, "src": "2026-11-20 .190: ISP total gain 11094 at the AE limit, unlit basement"},
+  "room": {"day": 490, "lit": 490, "dark": 490, "src": "2026-11-20 17:37 .190: room light on, ISP total gain 490"}
+ }
+}

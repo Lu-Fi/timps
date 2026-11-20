@@ -524,6 +524,29 @@ static void startup_give_up_abandoned(void)
     _exit(1);
 }
 
+/* every stream delivered frames, or this long passed: the incident that took
+ * the one-shot reboot is over, a new one gets its own */
+#ifndef MS_MARKER_CLEAR_S
+#define MS_MARKER_CLEAR_S 86400
+#endif
+static int marker_open;
+
+/* 1 = no marker left */
+static int marker_clear(void)
+{
+    if (unlink(MS_STARTUP_REBOOT_MARKER) == 0){
+        LOGI(MOD,"cleared the startup-reboot marker - this incident is over");
+        return 1;
+    }
+    /* ENOENT: nothing to clear. Anything else (EROFS, EACCES) leaves a stale
+     * marker that would silently spend the next, unrelated incident's
+     * reboot. */
+    if (errno == ENOENT) return 1;
+    LOGW(MOD,"could not clear the startup-reboot marker %s (%s) - remove it by hand",
+         MS_STARTUP_REBOOT_MARKER, strerror(errno));
+    return 1;
+}
+
 static void idr_trampoline(int src){ if (g_hal && g_hal->request_idr) g_hal->request_idr(src); }
 /* rand() seed for the remaining non-secret rand() users (UDP port picks
  * etc.). Seeding from time^pid made every rand()-derived value guessable
@@ -701,19 +724,11 @@ int main(int argc, char **argv)
     for (int backoff = 5;;) {
         if (g_hal->init(&g_cfg) == 0) {
             if (g_hal->start(&g_cfg) == 0) {
-                if (unlink(MS_STARTUP_REBOOT_MARKER) == 0)
-                    LOGI(MOD,"cleared the startup-reboot marker - this "
-                             "incident is over");
-                /* ENOENT is the normal case (no marker to clear) and stays
-                 * silent. Anything else - EROFS, EACCES - leaves a stale
-                 * marker behind invisibly, and a stale marker is not
-                 * harmless: the next, entirely unrelated incident finds it
-                 * via access() and skips straight to "giving up for real",
-                 * silently spending a recovery reboot it never got. */
-                else if (errno != ENOENT)
-                    LOGW(MOD,"could not clear the startup-reboot marker %s "
-                             "(%s) - remove it by hand",
-                         MS_STARTUP_REBOOT_MARKER, strerror(errno));
+                /* the marker is cleared in the main loop once every stream
+                 * has delivered frames: an encoder that dies when its first
+                 * viewer arrives (rmem short, T30 2026-11-20) passed start()
+                 * too, and clearing here rebooted on every preview */
+                marker_open = access(MS_STARTUP_REBOOT_MARKER, F_OK) == 0;
                 break;
             }
             /* start() failing is the SAME transient class as init() failing,
@@ -818,8 +833,19 @@ int main(int argc, char **argv)
                        g_cfg.http_port);
     LOGI(MOD,"running.%s%s", rurl, hurl);
 
+    int64_t run_t0 = ms_now_us();
+    unsigned seen = 0, want = 0;
+    for (int i = 0; i < MS_MAX_VSTREAM; i++)
+        if (g_cfg.video[i].enabled) want |= 1u << i;
     while (g_run) {
         sleep(1);
+        if (marker_open){
+            for (int i = 0; i < MS_MAX_VSTREAM; i++)
+                if ((want & (1u << i)) && hub_get_fps(i) > 0.0) seen |= 1u << i;
+            if ((seen & want) == want ||
+                ms_now_us() - run_t0 >= (int64_t)MS_MARKER_CLEAR_S * 1000000)
+                marker_open = !marker_clear();
+        }
 #ifdef USE_CONTROL
         control_tick();
 #endif

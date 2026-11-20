@@ -4279,9 +4279,13 @@ static void *jpeg_thread(void *arg)
          * rather than published/saved truncated. */
         size_t jneed=0;
         for (uint32_t i=0;i<st.packCount;i++) jneed += (size_t)st.pack[i].length;
-        if (jneed > MS_JPEG_BUF_MAX){
-            LOGW(MOD,"chn%d: JPEG exceeds max buffer (need=%zu, max=%d) - dropping frame",
-                 jc->chn, jneed, MS_JPEG_BUF_MAX);
+        /* a noisy night frame of a 1080p q75 stream reaches ~1.1 MB (T30
+         * 2026-11-20): the cap scales with the picture, 0.75 byte/pixel */
+        size_t jmax = (size_t)jc->w * (size_t)jc->h * 3 / 4;
+        if (jmax < (size_t)MS_JPEG_BUF_MAX) jmax = (size_t)MS_JPEG_BUF_MAX;
+        if (jneed > jmax){
+            LOGW(MOD,"chn%d: JPEG exceeds max buffer (need=%zu, max=%zu) - dropping frame",
+                 jc->chn, jneed, jmax);
             IMP_Encoder_ReleaseStream(jc->chn,&st);
             continue;
         }

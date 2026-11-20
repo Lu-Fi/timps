@@ -1585,8 +1585,11 @@ static void *dn_thread(void *arg)
             int jump = 0, cdk = 0;
             float jb = irp ? 1.0f - (float)dn->jump_pct / 100.0f : SD_JUMP_CHECK;
             /* a lamp lit within the settle after a look or a check is no
-             * reference: the level before them is, so the lamp jumps */
-            if (A < 0.0f && s > 0.0f && !sd_exhausted(&sm) &&
+             * reference: the level before them is, so the lamp jumps. A
+             * railed dark reading is a reference too: without one a room
+             * with no illuminator never jumps (ABUS T30, 2026-11-20), and a
+             * fall to jb of the rail is real light. */
+            if (A < 0.0f && s > 0.0f &&
                 ((now - mode_at >= DN_REF_DELAY_S * 1000 && stable >= DN_STABLE_N) ||
                  (a_by && now >= a_by))) {
                 A = Lq > 0.0f && s < Lq * jb ? Lq : s; a_by = 0;
@@ -1821,6 +1824,9 @@ static void *dn_thread(void *arg)
         }
         dn_light_on(dn->irprobe_cmd, 1);
         if (++ir_fails >= DN_IR_MAX_FAILS) g_ir_unusable = 1;
+        /* no look possible: ask the day pipeline like a camera without an
+         * illuminator, not 45 min later */
+        if (!locked){ L = s; goto check; }
         st = S_NIGHT; look_at = now + look_ms;
         goto out;
     check:

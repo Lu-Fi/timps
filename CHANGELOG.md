@@ -44,6 +44,21 @@ semantic versioning.
 
 ### Fixed
 
+- JPEG: the per-frame limit grows with the picture (0.75 byte/pixel, at least
+  the old 1 MiB / 4 MiB on T40/T41). A noisy 1080p night frame (~1.1 MB on a
+  T30) was dropped, so snapshot and MJPEG of that stream stayed empty at
+  night.
+- Startup/watchdog: the one-shot recovery reboot marker is cleared only once
+  every enabled stream has delivered frames (or after 24 h), not as soon as
+  the pipeline starts. An encoder that dies when its first viewer arrives
+  (rmem short) rebooted the camera on every preview before; now it reboots
+  once and then stays down with its log.
+- Day/night without a working illuminator: a look whose `irprobe_cmd` fails
+  now asks the day pipeline at once (one check) instead of waiting for the
+  next look 45 min later, and a dark reading with the AE at its limit is a
+  valid night reference, so a room light still counts as a jump. Seen on a
+  T30 without IR LEDs in a dark basement, which stayed in night with the
+  light on. Replay family `railed_dark_no_led`.
 - Audio with the vendor libimp on T31, T40 and T41: `audio.ns`, `audio.agc`
   and `audio.high_pass` had no effect, because the vendor library applies them
   only to AI device 1 and timps recorded on device 0 (Lu-Fi/openimp#605).

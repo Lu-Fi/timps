@@ -4644,6 +4644,38 @@
     "max_switches": 4,
     "max_on_s": 420
    }
+  },
+  {
+   "name": "railed_dark_no_led",
+   "title": "no illuminator and the AE railed in the dark: the room light still gives day by its jump, not only at the heartbeat (ABUS 2026-11-20)",
+   "duration_s": 3000,
+   "initial_mode": "night",
+   "led": false,
+   "timelines": {
+    "abus": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      600,
+      "dark"
+     ],
+     [
+      601,
+      "room"
+     ],
+     [
+      3000,
+      "room"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 120,
+    "max_switches": 4,
+    "max_on_s": 120
+   }
   }
  ]
 }
