@@ -169,7 +169,8 @@ per problem on stderr and 78/79 (80: could not check). `-V`/`--version` prints `
 `-v` is verbose logging, not the version. thingino's `S95timps` starts
 `timpsd` directly; the daemon runs the same check itself before the config
 and logs the lines under `LIBIMP`. (Until 2026-11-21 the init script ran
-`--check-libs` first as well; that cost about 1 s per boot on a T30.) A
+`--check-libs` first as well; dropping it lets the init scripts after it
+start about 2 s sooner on a T30, the first picture comes no sooner.) A
 dynamic-loader error (a missing `NEEDED` library) happens before `main()` and
 is outside what `timpsd` itself can report: run `timpsd --check-libs` by
 hand to see it.

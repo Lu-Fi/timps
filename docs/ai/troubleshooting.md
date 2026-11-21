@@ -566,8 +566,9 @@ The path is the one the loader actually used (`dladdr`).
 `S95timps start` ran `timpsd --check-libs` before `start-stop-daemon`; on
 78/79 it logged the lines under tag `timps`, added
 `timpsd not started (exit 78): libimp does not fit this timpsd build` and did
-not start the daemon. Current images start `timpsd` directly (the second
-check cost about 1 s per boot); the daemon then exits 78/79 with the
+not start the daemon. Current images start `timpsd` directly (the init
+scripts after it start about 2 s sooner; the first picture does not); the
+daemon then exits 78/79 with the
 `LIBIMP` lines above.
 
 **Confirm:**

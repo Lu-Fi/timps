@@ -10,9 +10,12 @@ semantic versioning.
 
 - thingino's `S95timps` no longer runs `timpsd --check-libs` before the
   start: the daemon runs the same libimp check itself (same exit codes 78/79,
-  lines under `LIBIMP` in syslog). The double check cost about 1 s per boot
-  (measured on a T30 battery camera woken by PIR: 0.36 s to scan the binary
-  for the option, 0.62 s for the check process). A dynamic-loader error
+  lines under `LIBIMP` in syslog). Measured on a T30 with a cold page cache
+  (two runs each): the init script returns after 0.8-0.9 s instead of
+  2.7-2.9 s, so the init scripts after it start about 2 s sooner. The time
+  to the ISP open (first picture) does not improve (2.8-3.5 s against
+  2.8-2.9 s): the check process had loaded timpsd and libimp into the page
+  cache, and the real start now pays that itself. A dynamic-loader error
   before `main()` is no longer logged by the init script; run
   `timpsd --check-libs` by hand. `scripts/test_s95timps_preflight.sh` is
   removed.

@@ -1213,8 +1213,10 @@ none of the 24 names resolves, it logs a warning
 `--check-libs` exits **80** then (could not check).
 
 **The init script no longer runs the check** (thingino, since 2026-11-21):
-the daemon's own check gives the same verdict, and running it twice cost
-about 1 s per boot on a T30 battery camera. Older images ran
+the daemon's own check gives the same verdict. On a T30 the init scripts
+after `S95timps` now start about 2 s sooner; the time to the first picture
+is unchanged, because the check process had warmed the page cache for the
+real start. Older images ran
 `timpsd --check-libs` in `S95timps start` first, logged 78/79 under tag
 **`timps`** (`timpsd not started (exit 78): libimp does not fit this timpsd
 build`) and did not start the daemon. Now the daemon starts and exits 78/79
