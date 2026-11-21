@@ -1212,19 +1212,15 @@ none of the 24 names resolves, it logs a warning
 `no IMP function resolves in … - libimp check skipped`) and starts as before;
 `--check-libs` exits **80** then (could not check).
 
-**The init script runs the same check first.** `S95timps start` runs
-`timpsd --check-libs`; on 78/79 it logs every line with
-`logger -t timps -p daemon.err` (tag **`timps`**), adds
-`timpsd not started (exit 78): libimp does not fit this timpsd build`, prints
-the same to the console, does **not** start the daemon and returns 1. Any other
-result (80 = could not check, an older `timpsd` without the option — detected
-by the string in the binary, never by running it — or a loader error) starts
-as before; a non-zero
-result with output adds a `daemon.warn` line
-`timpsd --check-libs exited <rc>, starting anyway: <first line>`, which is the
-only place a dynamic-loader error such as `can't load library 'libalog.so'`
-reaches syslog. A loader error before `main()` cannot be caught by `timpsd`
-itself.
+**The init script no longer runs the check** (thingino, since 2026-11-21):
+the daemon's own check gives the same verdict, and running it twice cost
+about 1 s per boot on a T30 battery camera. Older images ran
+`timpsd --check-libs` in `S95timps start` first, logged 78/79 under tag
+**`timps`** (`timpsd not started (exit 78): libimp does not fit this timpsd
+build`) and did not start the daemon. Now the daemon starts and exits 78/79
+with the `LIBIMP` lines above in syslog. A dynamic-loader error before
+`main()` (such as `can't load library 'libalog.so'`) reaches no log either
+way now: run `timpsd --check-libs` by hand to see it.
 
 `timpsd --check-libs` can be run by hand: it reads no config, takes no lock and
 opens no device. It prints `timpsd: libimp OK (vendor build, /usr/lib/libimp.so)`

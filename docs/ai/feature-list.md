@@ -858,7 +858,7 @@ the camera; the diagnostic scripts need `BR2_PACKAGE_TIMPS_DIAG_TOOLS`.
   v1.10.0** `test-roi`, `test-hub-hold`, `test-libimp-check`, **since
   v1.10.1** `test-stopgate` and `test-dn-replay`
   and the firmware script tests `scripts/test_irprobe.sh`,
-  `scripts/test_s95timps_preflight.sh`, `scripts/test_webui_idle.js`.
+  `scripts/test_webui_idle.js`.
 
 ## Build options (thingino / Buildroot)
 

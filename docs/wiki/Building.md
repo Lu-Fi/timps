@@ -166,11 +166,13 @@ Command line: `timpsd [-c <config>] [-v] [-V|--version] [--check-libs]`.
 `--check-libs` runs only this check (no config, no lock, no device) and prints
 `timpsd: libimp OK (vendor build, /usr/lib/libimp.so)` / exit 0, or one line
 per problem on stderr and 78/79 (80: could not check). `-V`/`--version` prints `timps <version>`.
-`-v` is verbose logging, not the version. thingino's `S95timps` runs
-`--check-libs` before `start-stop-daemon` and does not start a daemon that
-would exit 78/79 (it logs the lines under tag `timps`); any other result,
-80 included, starts as before. A dynamic-loader error (a missing `NEEDED` library) happens before
-`main()` and is outside what `timpsd` itself can report.
+`-v` is verbose logging, not the version. thingino's `S95timps` starts
+`timpsd` directly; the daemon runs the same check itself before the config
+and logs the lines under `LIBIMP`. (Until 2026-11-21 the init script ran
+`--check-libs` first as well; that cost about 1 s per boot on a T30.) A
+dynamic-loader error (a missing `NEEDED` library) happens before `main()` and
+is outside what `timpsd` itself can report: run `timpsd --check-libs` by
+hand to see it.
 
 The 24 names are checked offline against every libimp at hand:
 
@@ -179,7 +181,6 @@ scripts/check-libimp-required.sh -H                       # IMP headers of every
 scripts/check-libimp-required.sh --expect vendor  <vendor libimp.so>...
 scripts/check-libimp-required.sh --expect openimp <OpenIMP libimp.so>...
 make test-libimp-check                                     # decision + dlopen glue (host)
-scripts/test_s95timps_preflight.sh <thingino>/package/timps/files/S95timps
 ```
 
 A new libimp version must pass `check-libimp-required.sh` before it ships, or

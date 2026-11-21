@@ -6,6 +6,17 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- thingino's `S95timps` no longer runs `timpsd --check-libs` before the
+  start: the daemon runs the same libimp check itself (same exit codes 78/79,
+  lines under `LIBIMP` in syslog). The double check cost about 1 s per boot
+  (measured on a T30 battery camera woken by PIR: 0.36 s to scan the binary
+  for the option, 0.62 s for the check process). A dynamic-loader error
+  before `main()` is no longer logged by the init script; run
+  `timpsd --check-libs` by hand. `scripts/test_s95timps_preflight.sh` is
+  removed.
+
 ## [1.13.0] - 2026-11-21
 
 ### Added

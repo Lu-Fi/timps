@@ -562,17 +562,13 @@ prefixed `timpsd: `):
 
 The path is the one the loader actually used (`dladdr`).
 
-**`S95timps` preflight.** Before `start-stop-daemon`, `S95timps start` runs
-`timpsd --check-libs` — only if the binary contains the string `--check-libs`
-(a `timpsd` older than v1.9.30 would otherwise start as a foreground daemon on
-the unknown option). On 78/79 every line goes to syslog with
-`logger -t timps -p daemon.err` and to the console, followed by
-`timpsd not started (exit 78): libimp does not fit this timpsd build`; the
-daemon is **not** started and the script returns 1 (`restart` too). Any other
-exit code starts as before (including **80**, `--check-libs` could not
-check, see below); with output it first logs
-`timpsd --check-libs exited <rc>, starting anyway: <first line>` at
-`daemon.warn`.
+**`S95timps` preflight (older images).** Until 2026-11-21 thingino's
+`S95timps start` ran `timpsd --check-libs` before `start-stop-daemon`; on
+78/79 it logged the lines under tag `timps`, added
+`timpsd not started (exit 78): libimp does not fit this timpsd build` and did
+not start the daemon. Current images start `timpsd` directly (the second
+check cost about 1 s per boot); the daemon then exits 78/79 with the
+`LIBIMP` lines above.
 
 **Confirm:**
 
@@ -584,19 +580,18 @@ logread | grep -E 'LIBIMP|timps: timpsd'
 **Fix:** the image is mixed — usually a `timpsd` copied over from another
 build, or a firmware built with the other stack. Flash a consistent image, or
 install the `timpsd` built for the libimp on the camera. Do **not** suggest
-`LD_PRELOAD`, copying `libalog.so`, or editing the init script to skip the
-check.
+`LD_PRELOAD` or copying `libalog.so`.
 
 **What it cannot catch.** A dynamic-loader failure happens before `main()` —
 e.g. a vendor-flavour `timpsd` on an image without `libalog.so`
 (`can't load library 'libalog.so'`). Neither the daemon nor `--check-libs` can
-report that themselves; the preflight's `daemon.warn` line is where it becomes
-visible, and the daemon is then started as before (and fails the same way).
+report that themselves. On older images the init script's `daemon.warn` line
+(`timpsd --check-libs exited <rc>, starting anyway: …`) showed it; on current
+images nothing logs it, so run `timpsd --check-libs` by hand.
 The check is also skipped, with a warning, when `libimp.so` cannot be opened
 by name or none of the 24 names resolves (`… - libimp check skipped`), so a
 broken lookup never stops a camera: the daemon starts, and `--check-libs`
-(**since v1.10.0**) exits **80** instead of 0 so the preflight's
-`daemon.warn` line carries that warning.
+(**since v1.10.0**) exits **80** instead of 0.
 
 ---
 
