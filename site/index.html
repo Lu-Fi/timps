@@ -129,7 +129,7 @@ footer .wrap { display: flex; gap: 16px; flex-wrap: wrap; justify-content: space
       <strong>Ingenic SoC IP cameras</strong>. Pure C, built straight on <code>libimp</code>, with a live JSON
       control API, native day/night and motion detection. One of the streamer choices in
       <a href="https://github.com/themactep/thingino-firmware">thingino</a> firmware.</p>
-    <span class="pill">Newest release <b id="rel">v1.12.1</b> <span id="reldate">2026-11-08</span></span>
+    <span class="pill">Newest release <b id="rel">v1.13.0</b> <span id="reldate">2026-11-21</span></span>
     <div class="btns">
       <a class="btn primary" href="https://github.com/Lu-Fi/timps/releases/latest">Download / release notes</a>
       <a class="btn" href="docs/">Docs</a>
@@ -183,9 +183,13 @@ footer .wrap { display: flex; gap: 16px; flex-wrap: wrap; justify-content: space
 
   <section id="new">
     <h2>What's new</h2>
-    <p class="sub">v1.12.1 released 2026-11-08, v1.12.0 on 2026-11-07. Full list in the <a href="https://github.com/Lu-Fi/timps/blob/main/CHANGELOG.md">changelog</a>.</p>
+    <p class="sub">v1.13.0 released 2026-11-21, v1.12.1 on 2026-11-08, v1.12.0 on 2026-11-07. Full list in the <a href="https://github.com/Lu-Fi/timps/blob/main/CHANGELOG.md">changelog</a>.</p>
     <div class="news">
       <ul>
+        <li><strong>v1.13.0 - live sensor rate:</strong> <code>sensor.fps</code> can be POSTed without a restart, and <code>"persist":false</code> applies values without writing the config file, for board day/night scripts.</li>
+        <li><strong>v1.13.0 - day/night fixes:</strong> cameras without IR LEDs switch to day when a room light comes on; a railed dark look learns its bar; fewer pointless checks and looks; gain caps survive a day/night switch.</li>
+        <li><strong>v1.13.0 - audio with the vendor libimp:</strong> on T31/T40/T41 timps records on AI device 1, where <code>audio.ns</code>, <code>audio.agc</code> and <code>audio.high_pass</code> act.</li>
+        <li><strong>v1.13.0 - T32 and T33 (experimental, OpenIMP):</strong> builds; a T33L ran main and sub stream, snapshot and <code>/control</code>. T32 has not run on a camera.</li>
         <li><strong>v1.12.1 - rotation always available:</strong> no build option any more; <code>videoN.rotation</code> still defaults to 0, and the WebUI offers the angles the camera can do.</li>
         <li><strong>v1.12.1 - docs:</strong> this page and a <a href="docs/">searchable docs site</a>; the assistant docs are English only, with an honesty rule and per-feature availability.</li>
         <li><strong>v1.12.0 - full T30 support:</strong> rotation 90/270 for doorbells, H.265 and live rate control with OpenIMP, ISP keys (DPC, RawDRC, antifog, noise reduction) and encoder ROI.</li>

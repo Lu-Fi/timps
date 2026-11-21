@@ -6,7 +6,7 @@ firmware. Everything here is verified against the `main` branch of
 <https://github.com/Lu-Fi/timps> and against `package/timps/` in a thingino
 firmware tree.
 
-Applies to timps v1.12.1 (source: `main`, 2026-11-08)
+Applies to timps v1.13.0 (source: `main`, 2026-11-21)
 
 A statement marked **since vX** is new in that release — on an older camera
 describe the previous behaviour. Changes of v1.11.0, v1.11.1 and v1.12.0 in `CHANGELOG.md` are marked
@@ -736,7 +736,7 @@ Response body (same shape whatever the status):
 - `not_persisted` — applied live but not written: the request changed more
   keys than the 48-slot persist list holds, or the file write failed (full or
   read-only `/etc`). Tell the user to split the request or fix `/etc`; those
-  values are gone after a reboot. **Since the next release** also every
+  values are gone after a reboot. **Since v1.13.0** also every
   changed key of a request with a top-level `"persist":false` (or `0`): it is
   applied and announced on `/events` like any other, but `/etc/timps.conf` is
   not touched, so a restart brings back the file value. Meant for board

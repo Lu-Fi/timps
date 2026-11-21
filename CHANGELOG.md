@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-11-21
+
 ### Added
 
 - `/control`: `sensor.fps` applies live (POST, value > 0): the ISP retimes
@@ -13,8 +15,10 @@ semantic versioning.
   A top-level `"persist":false` in a POST applies its values without writing
   `/etc/timps.conf` (counted in `not_persisted`), for board scripts such as a
   day/night hook that runs the sensor at 15 fps and a softer sharpness at
-  night. Built and host-tested; the live fps change has not run on a camera
-  yet.
+  night. Tested on a T30 (OpenIMP) without IR LEDs: a day/night hook
+  switched 25 <-> 15 fps live in both directions, the driver took each value
+  and nothing was written to the file. The frame-rate conversion of a
+  stream configured below the sensor rate is not re-derived (unmeasured).
 - T32 and T33 builds (experimental, OpenIMP): `PLATFORM=T32` / `T33`
   compile against the T32 2.2.0 / T33 2.0.2.1 headers (header submodule
   now at gtxaspec/ingenic-headers 5bacc0f, which adds T32 2.2.0), with the
@@ -58,7 +62,8 @@ semantic versioning.
   next look 45 min later, and a dark reading with the AE at its limit is a
   valid night reference, so a room light still counts as a jump. Seen on a
   T30 without IR LEDs in a dark basement, which stayed in night with the
-  light on. Replay family `railed_dark_no_led`.
+  light on. Replay family `railed_dark_no_led`; on that camera a room light
+  now switches to day within seconds and back to night when it goes off.
 - Audio with the vendor libimp on T31, T40 and T41: `audio.ns`, `audio.agc`
   and `audio.high_pass` had no effect, because the vendor library applies them
   only to AI device 1 and timps recorded on device 0 (Lu-Fi/openimp#605).
@@ -108,7 +113,7 @@ semantic versioning.
   (`daynight day` while timps stands on night) - is switched back once after
   10 s. Before, `isp_desync = 1` was only reported, and the next look turned
   the IR LED back on into the colour pipeline. Switch by hand with
-  `daynight.enabled = 0`. New replay family `hand_switch` (cam .21,
+  `daynight.enabled = 0`. New replay family `hand_switch` (seen
   2026-11-10). It also works in Idle-Dark (which it leaves), not after a
   failed readback cycle, re-arms only on a readback that matches, and
   starts the darker-scene, jump and colour timers afresh (#6, replay
@@ -130,7 +135,7 @@ semantic versioning.
 
 - Day/night: a check that has no exposure reading yet (after the ISP
   readback cycle) no longer judges: it waited out its settle during the
-  cycle and took `-1` for day (cam-vanhua-t55a, 2026-11-11). The cycle
+  cycle and took `-1` for day (seen on a T55A, 2026-11-11). The cycle
   restarts the settle, and the re-assert no longer POSTs a
   `image.running_mode` that contradicts the engine's own switch.
 
@@ -7297,7 +7302,8 @@ camera before fleet rollout.
   TrueType OSD, motion detection, RTSP-Digest / HTTP-Basic auth. Ingenic
   headers via the `ingenic-headers` submodule.
 
-[Unreleased]: https://github.com/Lu-Fi/timps/compare/v1.12.1...HEAD
+[Unreleased]: https://github.com/Lu-Fi/timps/compare/v1.13.0...HEAD
+[1.13.0]: https://github.com/Lu-Fi/timps/compare/v1.12.1...v1.13.0
 [1.12.1]: https://github.com/Lu-Fi/timps/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/Lu-Fi/timps/compare/v1.11.1...v1.12.0
 [1.11.1]: https://github.com/Lu-Fi/timps/compare/v1.11.0...v1.11.1

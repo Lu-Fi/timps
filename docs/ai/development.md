@@ -1,6 +1,6 @@
 # timps — Developer and test notes
 
-Applies to timps v1.12.1 (source: `main`, 2026-11-16).
+Applies to timps v1.13.0 (source: `main`, 2026-11-21).
 
 **Audience: an AI assistant or a developer changing timps itself.** For
 answering user questions read `reference.md` first; for build basics
@@ -121,7 +121,7 @@ timeout -k 5 45 ffmpeg -nostdin -timeout 10000000 -rtsp_transport tcp \
     delivered no audio frames at all** (reproduced twice; RTSP clients wait
     for audio forever).
   OpenIMP applies the algorithms to the recording device, so device 0 works
-  there. Since the next release timps records on device 1 for vendor builds
+  there. Since v1.13.0 timps records on device 1 for vendor builds
   of T31/T40/T41 (`AI_DEV` in `src/hal/hal_ingenic.c`) and switches HPF on
   whenever NS is on. Other vendor SoCs (T10-T30, T23, T32/T33) are not
   verified and stay on device 0.

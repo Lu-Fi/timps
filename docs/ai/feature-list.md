@@ -15,7 +15,7 @@ not do.
   HTTP-Control-API, Streaming-Protocols, Day-Night, Audio, Motion-Detection,
   Recording-Timelapse, Rate-Control-\*, Building, Logging, Testing-QA,
   Platform-SDK-Support)
-* Applies to timps v1.12.1 (2026-11-08);
+* Applies to timps v1.13.0 (2026-11-21);
   stripped `timpsd` about 410 KB (410 108 bytes: mipsel, T31 with
   vendor libimp, WebRTC, TLS and rotation on; state of `main` 2026-10-06).
   Statements marked **since vX** are new in that release – on a
