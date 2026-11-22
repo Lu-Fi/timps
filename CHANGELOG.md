@@ -6,6 +6,17 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- T21 with OpenIMP: `image.ae_compensation` (0..255, 128 = neutral) through
+  `IMP_ISP_Tuning_SetAeComp`, bound weak like `image.dpc_strength`: a vendor
+  libimp (1.0.33, no such export) reports the key unsupported, and vendor
+  T21 builds are byte-identical. Needs an open-tx-isp with the T21 AE
+  target compensation (an older kernel module ignores the value). Measured on
+  a T21N/jxf23 at 5000 K: mean luma 99 / 106 / 118 / 129 / 144 / 159 at
+  40 / 64 / 96 / 128 / 160 / 200, 4-5 s per step; 230 and 255 not measured
+  as single points. OpenIMP T21 binary +4 B.
+
 ### Fixed
 
 - T23 in direct mode (`direct_mode=1`, main stream over IVDC): stream 0 had

@@ -238,7 +238,9 @@ not do.
   `temper_strength` (**since v1.10.0**). **Since v1.12.0** T40 has
   `ae_compensation` (AE target as on T41) and `max_again` (upper limit of the
   analogue AE gain, 1024 × 2^(value/32)), with vendor and
-  OpenIMP libimp.
+  OpenIMP libimp. **Since the next release** T21 with OpenIMP has
+  `ae_compensation` (weak import, unsupported on the vendor libimp; needs
+  an open-tx-isp with the T21 AE target compensation).
   *Availability:* per key (vendor libimp and OpenIMP unless marked; `caps.image` on the
   camera is the live list):
   - all SoCs: `brightness`, `contrast`, `saturation`, `sharpness`, `hflip`,

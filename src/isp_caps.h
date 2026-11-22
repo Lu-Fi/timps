@@ -72,7 +72,7 @@
  * ISP_WEAK_DEFOG_DRC): an OpenIMP build started on a vendor libimp reports the
  * key unsupported instead of calling NULL. Only reachable under USE_OPENIMP,
  * so vendor builds stay byte-identical.
- *   DPC    T10 T20 T21   defog  T20   DRC  T20
+ *   DPC    T10 T20 T21   defog  T20   DRC  T20   AE comp  T21
  * (T10: defog/DRC stay off, its IQ bank bypasses Iridix.) */
 #if defined(USE_OPENIMP)
 /* IMP_ISP_Tuning_SetColorfxMode / SetSceneMode act on the open stack (the
@@ -91,6 +91,12 @@
 #if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)
 #define ISP_HAS_DPC 1
 #define ISP_WEAK_DPC 1
+#endif
+/* T21: IMP_ISP_Tuning_SetAeComp (0..255, 128 = neutral); the vendor 1.0.33
+ * SDK neither declares nor exports it */
+#if defined(PLATFORM_T21)
+#define ISP_HAS_AECOMP 1
+#define ISP_WEAK_AECOMP 1
 #endif
 /* T41 (new tuning API): ae_compensation is AeScenceAttr.AeTargetComp,
  * sinter/temper_strength are Module_Ratio entries 0/1, all 0..255 with 128 the
@@ -119,7 +125,7 @@
 /* image.* keys whose setter may be absent at run time (GET /control asks
  * hal_isp_key_missing() before listing them in caps.image) */
 #if defined(ISP_HAS_COLORFX)||defined(ISP_HAS_SCENE)||defined(ISP_WEAK_DPC)|| \
-    defined(ISP_WEAK_DEFOG_DRC)
+    defined(ISP_WEAK_DEFOG_DRC)||defined(ISP_WEAK_AECOMP)
 #define ISP_WEAK_KEYS 1
 #endif
 #endif

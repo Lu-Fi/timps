@@ -1017,6 +1017,9 @@ extern int ms_isp_scene_set(int mode)   __asm__("IMP_ISP_Tuning_SetSceneMode")  
 #ifdef ISP_WEAK_DPC
 extern int ms_isp_dpc_set(uint32_t ratio) __asm__("IMP_ISP_Tuning_SetDPC_Strength") __attribute__((weak));
 #endif
+#ifdef ISP_WEAK_AECOMP
+extern int ms_isp_aecomp_set(int comp) __asm__("IMP_ISP_Tuning_SetAeComp") __attribute__((weak));
+#endif
 #ifdef ISP_WEAK_DEFOG_DRC
 extern int ms_isp_defog_set(uint8_t *ratio) __asm__("IMP_ISP_Tuning_SetDefog_Strength") __attribute__((weak));
 extern int ms_isp_drc_set(uint32_t ratio)   __asm__("IMP_ISP_Tuning_SetDRC_Strength")   __attribute__((weak));
@@ -1047,6 +1050,9 @@ int hal_isp_key_missing(const char *k)
 #endif
 #ifdef ISP_WEAK_DPC
     if (!ms_isp_dpc_set && !strcmp(k,"dpc_strength")) return 1;
+#endif
+#ifdef ISP_WEAK_AECOMP
+    if (!ms_isp_aecomp_set && !strcmp(k,"ae_compensation")) return 1;
 #endif
 #ifdef ISP_WEAK_DEFOG_DRC
     if (!ms_isp_defog_set && !strcmp(k,"defog_strength")) return 1;
@@ -2011,7 +2017,11 @@ static int isp_apply_image(const char *k)
         return 1;
     }
     if (!strcmp(k,"ae_compensation")){
-#ifdef ISP_HAS_AECOMP
+#if defined(ISP_WEAK_AECOMP)
+        static int said;
+        if (!ms_isp_aecomp_set) return isp_sym_missing(&said,"IMP_ISP_Tuning_SetAeComp",k);
+        ms_isp_aecomp_set(im->ae_compensation); return 1;
+#elif defined(ISP_HAS_AECOMP)
         IMP_ISP_Tuning_SetAeComp(im->ae_compensation); return 1;
 #else
         return 0;
