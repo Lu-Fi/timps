@@ -51,6 +51,7 @@ typedef struct {
     char        failed[256]; /* text whose render was discarded ... */
     int64_t     fail_until;  /* ... and until when not to retry it */
     int64_t     warn_us;     /* last oversize WARN (rate limit) */
+    int         ix, iy, iw, ih; /* ISP OSD: placement now shown, iw 0 = none */
 } osd_region;
 
 typedef struct {
@@ -307,26 +308,22 @@ static int t23_direct_mode(void)
     return v > 0;
 }
 
-static void isp_flip(const osd_stream *s, uint8_t *b, int w, int h, int *x, int *y)
+/* Measured on the QC3 (openimp#808): an ISP hflip mirrors the ISP OSD
+ * picture and its position, vflip leaves it alone, masks keep their place. */
+static void isp_hflip(const osd_stream *s, uint8_t *b, int w, int h, int *x)
 {
     config_str_lock();
-    int hf = g_hcfg->image.hflip, vf = g_hcfg->image.vflip;
+    int hf = g_hcfg->image.hflip;
     config_str_unlock();
-    if (hf){
-        *x = s->width - *x - w;
-        if (b) for (int r = 0; r < h; r++){
-            uint32_t *row = (uint32_t *)(b + (size_t)r * w * 4);
-            for (int i = 0, j = w - 1; i < j; i++, j--){ uint32_t t = row[i]; row[i] = row[j]; row[j] = t; }
-        }
-    }
-    if (vf){
-        *y = s->height - *y - h;
-        if (b) for (int i = 0, j = h - 1; i < j; i++, j--){
-            uint32_t *ri = (uint32_t *)(b + (size_t)i * w * 4), *rj = (uint32_t *)(b + (size_t)j * w * 4);
-            for (int k = 0; k < w; k++){ uint32_t t = ri[k]; ri[k] = rj[k]; rj[k] = t; }
-        }
+    if (!hf) return;
+    *x = s->width - *x - w;
+    for (int r = 0; r < h; r++){
+        uint32_t *row = (uint32_t *)(b + (size_t)r * w * 4);
+        for (int i = 0, j = w - 1; i < j; i++, j--){ uint32_t t = row[i]; row[i] = row[j]; row[j] = t; }
     }
 }
+
+extern int IMP_OSD_UpdateRgnAttrData_ISP(int chn, int handle, IMPIspOsdAttrAsm *attr);
 
 /* The ISP copies the picture into its own memory: b is freed here. */
 static void isp_pic(osd_stream *s, osd_region *rg, uint8_t *b, int w, int h,
@@ -335,7 +332,7 @@ static void isp_pic(osd_stream *s, osd_region *rg, uint8_t *b, int w, int h,
     if (alpha < 255)
         for (size_t i = 3; i < (size_t)w * h * 4; i += 4)
             b[i] = (uint8_t)(b[i] * alpha / 255);
-    isp_flip(s, b, w, h, &x, &y);
+    isp_hflip(s, b, w, h, &x);
     IMPIspOsdAttrAsm a; memset(&a, 0, sizeof a);
     a.type = ISP_OSD_REG_PIC;
     a.stsinglepicAttr.chx = 0;
@@ -351,9 +348,20 @@ static void isp_pic(osd_stream *s, osd_region *rg, uint8_t *b, int w, int h,
     a.stsinglepicAttr.pic.osd_height = (uint16_t)h;
     a.stsinglepicAttr.pic.osd_image = (char *)b;
     a.stsinglepicAttr.pic.osd_stride = (uint16_t)(w * 4);
-    if (IMP_ISP_Tuning_SetOsdRgnAttr(0, rg->rgn, &a) != 0 ||
-        IMP_ISP_Tuning_ShowOsdRgn(0, rg->rgn, 1) != 0)
+    /* same place and size: only the bytes change and the region stays
+     * visible; SetOsdRgnAttr hides it until the next Show */
+    int r;
+    if (rg->iw == w && rg->ih == h && rg->ix == x && rg->iy == y)
+        r = IMP_OSD_UpdateRgnAttrData_ISP(0, rg->rgn, &a);
+    else {
+        r = IMP_ISP_Tuning_SetOsdRgnAttr(0, rg->rgn, &a);
+        if (r == 0) r = IMP_ISP_Tuning_ShowOsdRgn(0, rg->rgn, 1);
+    }
+    if (r == 0){ rg->ix = x; rg->iy = y; rg->iw = w; rg->ih = h; }
+    else {
+        rg->iw = 0;
         LOGW(MOD, "ISP OSD item %d (%dx%d at %d,%d) not shown", rg->item, w, h, x, y);
+    }
     free(b);
 }
 #endif
@@ -533,7 +541,6 @@ static void setup_cover(osd_stream *s, int n)
         IMPISPMaskBlockAttr m; memset(&m, 0, sizeof m);
         m.chx = 0; m.pinum = (uint8_t)n;
         m.mask_en = p->enabled && w > 0 && h > 0;
-        if (m.mask_en) isp_flip(s, NULL, w, h, &x, &y);
         m.mask_pos_left = (uint16_t)x; m.mask_pos_top = (uint16_t)y;
         m.mask_width = (uint16_t)(w > 0 ? w : 0); m.mask_height = (uint16_t)(h > 0 ? h : 0);
         m.mask_type = IMPISP_MASK_TYPE_RGB;
@@ -616,7 +623,7 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
         const ms_osd_item *it=&cfg->osd.items[stream_idx][i];
         if (!it->enabled) continue;
         osd_region *rg=&s->r[i];
-        rg->item=i; rg->last[0]=0; rg->failed[0]=0; rg->warn_us=0;
+        rg->item=i; rg->last[0]=0; rg->failed[0]=0; rg->warn_us=0; rg->iw=0;
 #ifdef OSD_ISP
         rg->rgn = s->isp ? IMP_ISP_Tuning_CreateOsdRgn(0, NULL) : IMP_OSD_CreateRgn(NULL);
 #else
@@ -823,9 +830,10 @@ void imp_osd_apply(int stream, int item)
             continue;
         }
 #ifdef OSD_ISP
-        if (s->isp)
+        if (s->isp){
             IMP_ISP_Tuning_ShowOsdRgn(0, rg->rgn, 0);   /* a re-render shows it again */
-        else
+            rg->iw = 0;
+        } else
 #endif
         {
         IMPOSDGrpRgnAttr g; memset(&g,0,sizeof g);
