@@ -6,6 +6,19 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- T23 in direct mode (`direct_mode=1`, main stream over IVDC): stream 0 had
+  no overlays and no privacy masks, because the IVDC frames never sit in
+  memory where the normal OSD draws. timps now draws them with the ISP OSD
+  and the ISP mask blocks, as the vendor SDK does (Lu-Fi/openimp#808).
+  Text updates keep the region visible (data-only update); a live
+  `image.hflip` change redraws every region, because the ISP mirrors the
+  OSD with the picture. Tested on a T23DL with OpenIMP: overlays in the H.264
+  stream and the JPEG snapshot, no frame without the timestamp in 110 frames,
+  a live mask in both, hflip on and off live. Not tested with the vendor
+  libimp. T23 binary +4.1 KB.
+
 ### Changed
 
 - thingino's `S95timps` no longer runs `timpsd --check-libs` before the

@@ -609,6 +609,14 @@ default y); the `/control` actions need `USE_CONTROL`.
 OpenIMP; `osd.hinting` acts only with `USE_OSD_HINTING` (Kconfig default n).
 On a stream rotated 90/270 with the vendor libimp, overlays and privacy masks
 cover only the top band (`video.<N>.rotate_path` = `band`).
+On T23 in direct mode (`tx-isp-t23` `direct_mode=1`, main stream over IVDC)
+the main stream's frames never sit in memory, so the normal OSD cannot draw
+on them. **Since the next release** timps then draws stream 0's overlays with
+the ISP OSD and its privacy masks with the ISP mask blocks, like the vendor
+SDK (Lu-Fi/openimp#808). Up to 8 overlays and 4 masks, both stacks. Masks are
+opaque there: the alpha byte of `color` is ignored. Tested on a T23DL with
+OpenIMP; not tested with the vendor libimp. Up to v1.13.0 stream 0 in direct
+mode had no overlays and no privacy masks.
 
 * **Own TrueType rasterizer** (no libschrift), up to 8 overlays
   **per video stream**: keys `osd<S>.<N>.<field>` (e.g. `osd0.0.text`,
