@@ -21,6 +21,12 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
+#if defined(PLATFORM_T23)
+#include <imp/imp_isp.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#define OSD_ISP 1
+#endif
 
 #define MOD "OSD"
 
@@ -54,6 +60,7 @@ typedef struct {
     int         width, height;
     osd_region  r[MS_MAX_OSD];
     int         pr_rgn[MS_MAX_PRIVACY]; /* privacy cover region handles, -1 unused */
+    int         isp;         /* drawn by the ISP OSD (T23 direct mode), not IMP_OSD */
 } osd_stream;
 
 static osd_stream       g_os[MS_MAX_VSTREAM];
@@ -278,6 +285,79 @@ static void osd_text_failed(osd_region *rg, const char *txt, int64_t until)
     rg->fail_until = until;
 }
 
+#ifdef OSD_ISP
+/* T23 direct mode: the main stream goes ISP -> IVDC -> encoder and its
+ * frames never sit in memory, so the IPU/CPU OSD cannot draw on them. The
+ * vendor draws there with the ISP OSD (SDK sample-OSD-Treble.c), and so
+ * does timps (Lu-Fi/openimp#808). The vendor ko has no sysfs parameter;
+ * libimp asks the IVDC device. */
+static int t23_direct_mode(void)
+{
+    int v = -1;
+    FILE *f = fopen("/sys/module/tx_isp_t23/parameters/direct_mode", "r");
+    if (f){ if (fscanf(f, "%d", &v) != 1) v = -1; fclose(f); }
+    if (v < 0){
+        int fd = open("/dev/misc-ivdc", O_RDWR);
+        if (fd >= 0){
+            int d = 0;
+            if (ioctl(fd, 0xc004543f, &d) == 0) v = d;
+            close(fd);
+        }
+    }
+    return v > 0;
+}
+
+static void isp_flip(const osd_stream *s, uint8_t *b, int w, int h, int *x, int *y)
+{
+    config_str_lock();
+    int hf = g_hcfg->image.hflip, vf = g_hcfg->image.vflip;
+    config_str_unlock();
+    if (hf){
+        *x = s->width - *x - w;
+        if (b) for (int r = 0; r < h; r++){
+            uint32_t *row = (uint32_t *)(b + (size_t)r * w * 4);
+            for (int i = 0, j = w - 1; i < j; i++, j--){ uint32_t t = row[i]; row[i] = row[j]; row[j] = t; }
+        }
+    }
+    if (vf){
+        *y = s->height - *y - h;
+        if (b) for (int i = 0, j = h - 1; i < j; i++, j--){
+            uint32_t *ri = (uint32_t *)(b + (size_t)i * w * 4), *rj = (uint32_t *)(b + (size_t)j * w * 4);
+            for (int k = 0; k < w; k++){ uint32_t t = ri[k]; ri[k] = rj[k]; rj[k] = t; }
+        }
+    }
+}
+
+/* The ISP copies the picture into its own memory: b is freed here. */
+static void isp_pic(osd_stream *s, osd_region *rg, uint8_t *b, int w, int h,
+                    int x, int y, int alpha)
+{
+    if (alpha < 255)
+        for (size_t i = 3; i < (size_t)w * h * 4; i += 4)
+            b[i] = (uint8_t)(b[i] * alpha / 255);
+    isp_flip(s, b, w, h, &x, &y);
+    IMPIspOsdAttrAsm a; memset(&a, 0, sizeof a);
+    a.type = ISP_OSD_REG_PIC;
+    a.stsinglepicAttr.chx = 0;
+    a.stsinglepicAttr.sensornum = 0;
+    a.stsinglepicAttr.chnOSDAttr.osd_type = IMP_ISP_PIC_ARGB_8888;
+    a.stsinglepicAttr.chnOSDAttr.osd_argb_type = IMP_ISP_ARGB_TYPE_BGRA;
+    a.stsinglepicAttr.chnOSDAttr.osd_pixel_alpha_disable = IMPISP_TUNING_OPS_MODE_DISABLE;
+    a.stsinglepicAttr.pic.pinum = (uint8_t)rg->rgn;
+    a.stsinglepicAttr.pic.osd_enable = 1;
+    a.stsinglepicAttr.pic.osd_left = (uint16_t)x;
+    a.stsinglepicAttr.pic.osd_top = (uint16_t)y;
+    a.stsinglepicAttr.pic.osd_width = (uint16_t)w;
+    a.stsinglepicAttr.pic.osd_height = (uint16_t)h;
+    a.stsinglepicAttr.pic.osd_image = (char *)b;
+    a.stsinglepicAttr.pic.osd_stride = (uint16_t)(w * 4);
+    if (IMP_ISP_Tuning_SetOsdRgnAttr(0, rg->rgn, &a) != 0 ||
+        IMP_ISP_Tuning_ShowOsdRgn(0, rg->rgn, 1) != 0)
+        LOGW(MOD, "ISP OSD item %d (%dx%d at %d,%d) not shown", rg->item, w, h, x, y);
+    free(b);
+}
+#endif
+
 static void refresh_text(osd_stream *s, osd_region *rg)
 {
     if (osd_test_static_mode() && rg->buf) return;  /* test mode: only the very first render counts */
@@ -335,7 +415,7 @@ static void refresh_text(osd_stream *s, osd_region *rg)
             return;
         }
     }
-    if (bgra && rotated) osd_even_pad(&bgra, &w, &h);   /* even dims only for the rotated IPU-OSD path */
+    if (bgra && (rotated || s->isp)) osd_even_pad(&bgra, &w, &h);   /* even dims: rotated IPU-OSD path, ISP OSD */
     /* H5: a bitmap larger than the frame cannot be composited safely -
      * resolve_pos() clamps the origin to 0 but the far edge (x+w-1) would
      * still land outside the frame, and on several T-SoCs IMP_OSD then
@@ -360,6 +440,13 @@ static void refresh_text(osd_stream *s, osd_region *rg)
     osd_rot_place(s, Px, Py, &bgra, &w, &h, &x, &y);   /* rotated: clamp into top band + even origin */
     LOGD(MOD,"osd s%d i%d TEXT portrait(%d,%d) -> place(%d,%d)-(%d,%d) %dx%d",
          s->si, rg->item, Px, Py, x, y, x+w-1, y+h-1, w, h);
+#ifdef OSD_ISP
+    if (s->isp){
+        isp_pic(s, rg, bgra, w, h, x, y, it.transparency);
+        strncpy(rg->last, txt, sizeof rg->last - 1); rg->last[sizeof rg->last - 1]=0;
+        return;
+    }
+#endif
     IMPOSDRgnAttr a; memset(&a,0,sizeof a);
     a.type=OSD_REG_PIC;
     a.rect.p0.x=x; a.rect.p0.y=y; a.rect.p1.x=x+w-1; a.rect.p1.y=y+h-1;
@@ -394,12 +481,15 @@ static void setup_logo(osd_stream *s, osd_region *rg)
     uint8_t *b=load_bgra(it.logo_path, it.logo_w, it.logo_h);
     if (!b){ LOGW(MOD,"logo %s (%dx%d) not loaded", it.logo_path, it.logo_w, it.logo_h); return; }
     int lw=it.logo_w, lh=it.logo_h;
-    if (lrot) osd_even_pad(&b, &lw, &lh);   /* even dims only for the rotated IPU-OSD path */
+    if (lrot || s->isp) osd_even_pad(&b, &lw, &lh);   /* even dims: rotated IPU-OSD path, ISP OSD */
     int Px,Py; resolve_pos(s->width, s->height, lw, lh, it.x, it.y, &Px,&Py);
     int x=Px, y=Py;
     osd_rot_place(s, Px, Py, &b, &lw, &lh, &x, &y);   /* rotated: clamp into top band + even origin */
     LOGD(MOD,"osd s%d i%d LOGO portrait(%d,%d) -> place(%d,%d)-(%d,%d) %dx%d",
          s->si, rg->item, Px, Py, x, y, x+lw-1, y+lh-1, lw, lh);
+#ifdef OSD_ISP
+    if (s->isp){ isp_pic(s, rg, b, lw, lh, x, y, it.transparency); return; }
+#endif
     IMPOSDRgnAttr a; memset(&a,0,sizeof a);
     a.type=OSD_REG_PIC;
     a.rect.p0.x=x; a.rect.p0.y=y; a.rect.p1.x=x+lw-1; a.rect.p1.y=y+lh-1;
@@ -438,6 +528,23 @@ static void setup_cover(osd_stream *s, int n)
         if (osd_band_limited(s) && h > s->width) h = s->width;
         x&=~1; y&=~1; w&=~1; h&=~1;
     }
+#ifdef OSD_ISP
+    if (s->isp){
+        IMPISPMaskBlockAttr m; memset(&m, 0, sizeof m);
+        m.chx = 0; m.pinum = (uint8_t)n;
+        m.mask_en = p->enabled && w > 0 && h > 0;
+        if (m.mask_en) isp_flip(s, NULL, w, h, &x, &y);
+        m.mask_pos_left = (uint16_t)x; m.mask_pos_top = (uint16_t)y;
+        m.mask_width = (uint16_t)(w > 0 ? w : 0); m.mask_height = (uint16_t)(h > 0 ? h : 0);
+        m.mask_type = IMPISP_MASK_TYPE_RGB;
+        m.mask_value.argb.r_value = (uint8_t)(p->color >> 16);
+        m.mask_value.argb.g_value = (uint8_t)(p->color >> 8);
+        m.mask_value.argb.b_value = (uint8_t)p->color;
+        if (IMP_ISP_Tuning_SetMaskBlock(&m) != 0)
+            LOGW(MOD, "ISP mask %d on stream 0 not applied", n);
+        return;
+    }
+#endif
     if (!p->enabled || w<=0 || h<=0){
         IMP_OSD_ShowRgn(rgn, s->grp, 0);
         return;
@@ -493,6 +600,14 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
                      "%d px of %dx%d", stream_idx, rot, width, width, height);
     }
 
+    s->isp = 0;
+#ifdef OSD_ISP
+    if (stream_idx == 0 && !osd_rotated(s) && t23_direct_mode()){
+        s->isp = 1;
+        LOGI(MOD,"stream 0: T23 direct mode, overlays and privacy masks drawn by the ISP OSD");
+    }
+#endif
+
     if (IMP_OSD_CreateGroup(s->grp)<0){ LOGE(MOD,"CreateGroup %d failed",s->grp); s->used=0; return -1; }
 
     int active=0;
@@ -502,7 +617,11 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
         if (!it->enabled) continue;
         osd_region *rg=&s->r[i];
         rg->item=i; rg->last[0]=0; rg->failed[0]=0; rg->warn_us=0;
+#ifdef OSD_ISP
+        rg->rgn = s->isp ? IMP_ISP_Tuning_CreateOsdRgn(0, NULL) : IMP_OSD_CreateRgn(NULL);
+#else
         rg->rgn=IMP_OSD_CreateRgn(NULL);
+#endif
         /* Finding 5: CreateRgn returns <0 on failure (reachable via OSD region-
          * pool exhaustion, osd_pool_size). Skip the rest of this region's setup
          * rather than issuing Register/SetGrpRgnAttr/SetRgnAttr/ShowRgn against a
@@ -516,6 +635,7 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
         /* A failed register/attr leaves an invisible region that every later
          * refresh keeps drawing into for nothing - silent missing OSD with no
          * hint where it went. Cheap to say out loud, once per region. */
+        if (!s->isp){
         if (IMP_OSD_RegisterRgn(rg->rgn, s->grp, NULL) != 0)
             LOGW(MOD,"IMP_OSD_RegisterRgn(rgn%d,grp%d) failed - this overlay "
                      "will stay invisible", rg->rgn, s->grp);
@@ -524,6 +644,7 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
         if (IMP_OSD_SetGrpRgnAttr(rg->rgn, s->grp, &g) != 0)
             LOGW(MOD,"IMP_OSD_SetGrpRgnAttr(rgn%d,grp%d) failed - overlay may "
                      "render with wrong alpha or not at all", rg->rgn, s->grp);
+        }
         rg->is_text=(it->type==MS_OSD_TEXT);
         if (rg->is_text){
             if (it->font_path[0]){
@@ -542,6 +663,12 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
      * group exists (OSD or privacy was on at startup) */
     int priv=0;
     for (int n=0;n<MS_MAX_PRIVACY;n++){
+        if (s->isp){            /* ISP mask block n, no IMP region */
+            s->pr_rgn[n]=n;
+            setup_cover(s, n);
+            if (cfg->privacy[stream_idx][n].enabled) priv++;
+            continue;
+        }
         s->pr_rgn[n]=IMP_OSD_CreateRgn(NULL);
         /* Finding 5: same as the overlay regions above - a failed CreateRgn
          * (<0, region-pool exhaustion) must not be Register/SetRgnAttr/Shown as a
@@ -695,10 +822,17 @@ void imp_osd_apply(int stream, int item)
                      item, si);
             continue;
         }
+#ifdef OSD_ISP
+        if (s->isp)
+            IMP_ISP_Tuning_ShowOsdRgn(0, rg->rgn, 0);   /* a re-render shows it again */
+        else
+#endif
+        {
         IMPOSDGrpRgnAttr g; memset(&g,0,sizeof g);
         g.show=it->enabled?1:0; g.gAlphaEn=1; g.fgAlhpa=(uint8_t)it->transparency;
         IMP_OSD_SetGrpRgnAttr(rg->rgn, s->grp, &g);
         IMP_OSD_ShowRgn(rg->rgn, s->grp, it->enabled?1:0);
+        }
         LOGI(MOD,"osd stream %d item %d re-applied (enabled=%d x=%d y=%d "
                  "outline=%d)", si, item, it->enabled, it->x, it->y,
              it->outline);
@@ -766,9 +900,17 @@ void imp_osd_stop(void)
         for (int i=0;i<MS_MAX_OSD;i++){
             osd_region *rg=&s->r[i];
             if (rg->rgn<0) continue;
+#ifdef OSD_ISP
+            if (s->isp){
+                IMP_ISP_Tuning_ShowOsdRgn(0, rg->rgn, 0);
+                IMP_ISP_Tuning_DestroyOsdRgn(0, rg->rgn);
+            } else
+#endif
+            {
             IMP_OSD_ShowRgn(rg->rgn, s->grp, 0);
             IMP_OSD_UnRegisterRgn(rg->rgn, s->grp);
             IMP_OSD_DestroyRgn(rg->rgn);
+            }
             free(rg->buf); rg->buf=NULL;
             for (int ri=0;ri<MS_OSD_RETIRE;ri++){
                 free(rg->retired[ri]); rg->retired[ri]=NULL;
@@ -779,6 +921,15 @@ void imp_osd_stop(void)
         }
         for (int n=0;n<MS_MAX_PRIVACY;n++){
             if (s->pr_rgn[n]<0) continue;
+#ifdef OSD_ISP
+            if (s->isp){
+                IMPISPMaskBlockAttr m; memset(&m, 0, sizeof m);
+                m.chx = 0; m.pinum = (uint8_t)n;
+                IMP_ISP_Tuning_SetMaskBlock(&m);
+                s->pr_rgn[n]=-1;
+                continue;
+            }
+#endif
             IMP_OSD_ShowRgn(s->pr_rgn[n], s->grp, 0);
             IMP_OSD_UnRegisterRgn(s->pr_rgn[n], s->grp);
             IMP_OSD_DestroyRgn(s->pr_rgn[n]);
