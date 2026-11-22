@@ -324,6 +324,17 @@ static void isp_hflip(const osd_stream *s, uint8_t *b, int w, int h, int *x)
 }
 
 extern int IMP_OSD_UpdateRgnAttrData_ISP(int chn, int handle, IMPIspOsdAttrAsm *attr);
+extern int IMP_OSD_Init_ISP(void) __attribute__((weak));
+
+/* The vendor OSDInit always runs IMP_OSD_Init_ISP; OpenIMP on T23 does not
+ * (openimp#808), so CreateOsdRgn fails there until it is called once. */
+static int isp_create_rgn(void)
+{
+    int h = IMP_ISP_Tuning_CreateOsdRgn(0, NULL);
+    if (h < 0 && IMP_OSD_Init_ISP && IMP_OSD_Init_ISP() == 0)
+        h = IMP_ISP_Tuning_CreateOsdRgn(0, NULL);
+    return h;
+}
 
 /* The ISP copies the picture into its own memory: b is freed here. */
 static void isp_pic(osd_stream *s, osd_region *rg, uint8_t *b, int w, int h,
@@ -625,7 +636,7 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
         osd_region *rg=&s->r[i];
         rg->item=i; rg->last[0]=0; rg->failed[0]=0; rg->warn_us=0; rg->iw=0;
 #ifdef OSD_ISP
-        rg->rgn = s->isp ? IMP_ISP_Tuning_CreateOsdRgn(0, NULL) : IMP_OSD_CreateRgn(NULL);
+        rg->rgn = s->isp ? isp_create_rgn() : IMP_OSD_CreateRgn(NULL);
 #else
         rg->rgn=IMP_OSD_CreateRgn(NULL);
 #endif
