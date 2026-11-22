@@ -68,6 +68,10 @@ static osd_stream       g_os[MS_MAX_VSTREAM];
 static const ms_config *g_hcfg;
 static msttf_font       g_shared; static int g_shared_ok;
 static ms_stopgate      g_gate;   static pthread_t g_thr;
+#ifdef OSD_ISP
+static int g_isp_armed, g_isp_due;   /* re-send after the first chn0 frame */
+static void isp_redraw(int masks);
+#endif
 static int              g_started;   /* P-02: gate replaces the old volatile run flag */
 
 /* Region access is serialized against the updater thread: live control
@@ -623,6 +627,7 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
     if (stream_idx == 0 && !osd_rotated(s) && t23_direct_mode()){
         s->isp = 1;
         LOGI(MOD,"stream 0: T23 direct mode, overlays and privacy masks drawn by the ISP OSD");
+        __atomic_store_n(&g_isp_armed, 1, __ATOMIC_RELAXED);
     }
 #endif
 
@@ -755,6 +760,12 @@ static void *osd_thread(void *arg)
     (void)arg;
     int idle_cycles = 0;
     while (!ms_stopgate_stopped(&g_gate)){
+#ifdef OSD_ISP
+        if (__atomic_exchange_n(&g_isp_due, 0, __ATOMIC_RELAXED)){
+            isp_redraw(1);
+            LOGI(MOD, "stream 0: ISP OSD regions re-sent after the first frame");
+        }
+#endif
         int need = osd_needed();
         if (need){
             idle_cycles = 0;
@@ -909,20 +920,47 @@ int imp_osd_group_active(int stream)
 }
 #endif /* USE_CONTROL */
 
-void imp_osd_flip_changed(void)
-{
 #ifdef OSD_ISP
+static void isp_redraw(int masks)
+{
     if (!g_hcfg) return;
     OSD_LOCK();
     osd_stream *s = &g_os[0];
-    if (s->used && s->isp)
+    if (s->used && s->isp){
         for (int i = 0; i < MS_MAX_OSD; i++){
             osd_region *rg = &s->r[i];
             if (rg->rgn < 0) continue;
             rg->iw = 0; rg->last[0] = 0; rg->failed[0] = 0;
             if (rg->is_text) refresh_text(s, rg); else setup_logo(s, rg);
         }
+        if (masks)
+            for (int n = 0; n < MS_MAX_PRIVACY; n++)
+                if (s->pr_rgn[n] >= 0) setup_cover(s, n);
+    }
     OSD_UNLOCK();
+}
+#endif
+
+void imp_osd_flip_changed(void)
+{
+#ifdef OSD_ISP
+    isp_redraw(0);
+#endif
+}
+
+void imp_osd_isp_rearm(void)
+{
+#ifdef OSD_ISP
+    if (g_os[0].isp) __atomic_store_n(&g_isp_armed, 1, __ATOMIC_RELAXED);
+#endif
+}
+
+void imp_osd_isp_frame(void)
+{
+#ifdef OSD_ISP
+    if (__atomic_load_n(&g_isp_armed, __ATOMIC_RELAXED) &&
+        __atomic_exchange_n(&g_isp_armed, 0, __ATOMIC_RELAXED))
+        __atomic_store_n(&g_isp_due, 1, __ATOMIC_RELAXED);
 #endif
 }
 
@@ -983,6 +1021,8 @@ void imp_osd_start_updater(void){}
 void imp_osd_stop(void){}
 void imp_osd_refresh_now(void){}
 void imp_osd_flip_changed(void){}
+void imp_osd_isp_rearm(void){}
+void imp_osd_isp_frame(void){}
 #ifdef USE_CONTROL
 void imp_osd_apply(int stream, int item){ (void)stream; (void)item; }
 void imp_osd_privacy_apply(int stream, int item){ (void)stream; (void)item; }

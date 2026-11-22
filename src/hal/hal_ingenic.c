@@ -522,6 +522,7 @@ static void fs_edge_relatch(int chn)
          * inside that delivery. Plain stores, so holding g_fs_mtx/g_isp_lock
          * around this would be safe too; kept outside for lock hygiene. */
         ae_it_max_arm();
+        imp_osd_isp_rearm();
     }
 }
 static void fs_use(int chn)
@@ -4056,6 +4057,7 @@ static void *video_thread(void *arg)
          * (see ae_it_max_on_frame). Cheap no-op unless image.ae_it_max_us is
          * set, and this is exactly where a working live /control POST lands. */
         ae_it_max_on_frame(vc->chn);
+        if (vc->chn == 0) imp_osd_isp_frame();
     }
     if (receiving){ IMP_Encoder_StopRecvPic(vc->chn); fs_unuse(vc->chn); }
     return NULL;
@@ -4373,6 +4375,7 @@ static void *jpeg_thread(void *arg)
          * gate, which only ever skipped the now-eliminated malloc+copy. */
         hub_publish_take(jc->src, pk, pub_now, 1, MS_MEDIA_JPEG, pub_now);
         ae_it_max_on_frame(jc->fs_chn);   /* real delivery: see video_thread's call */
+        if (jc->fs_chn == 0) imp_osd_isp_frame();
     }
     if (receiving){ IMP_Encoder_StopRecvPic(jc->chn); fs_unuse(jc->fs_chn); }
     /* This thread also leaves the loop for good on the watchdog give-up above,

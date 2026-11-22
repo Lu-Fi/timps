@@ -16,6 +16,10 @@ void imp_osd_refresh_now(void);
 
 /* image.hflip changed: redraw what the ISP OSD mirrors (T23 direct mode) */
 void imp_osd_flip_changed(void);
+/* T23 direct mode: the driver drops ISP OSD blocks sent before chn0 streams.
+ * rearm: chn0 framesource (re)enabled; frame: a chn0 frame was delivered. */
+void imp_osd_isp_rearm(void);
+void imp_osd_isp_frame(void);
 
 /* Tear down all OSD groups and stop the updater. */
 void imp_osd_stop(void);

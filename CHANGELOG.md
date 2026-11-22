@@ -17,7 +17,11 @@ semantic versioning.
   OSD with the picture. Tested on a T23DL with OpenIMP: overlays in the H.264
   stream and the JPEG snapshot, no frame without the timestamp in 110 frames,
   a live mask in both, hflip on and off live. Not tested with the vendor
-  libimp. T23 binary +4.1 KB.
+  libimp. T23 binary +4.1 KB. The T23 driver ignores ISP OSD blocks sent
+  before channel 0 streams (it checks them against channel limits that are
+  set only then) and still returns 0, so the hostname and the logo, which are
+  sent once, were missing. timps re-sends all ISP regions and masks once after
+  the first channel-0 frame, and again after each channel-0 re-enable (+12 B).
 
 ### Changed
 
