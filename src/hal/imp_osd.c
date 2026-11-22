@@ -909,6 +909,23 @@ int imp_osd_group_active(int stream)
 }
 #endif /* USE_CONTROL */
 
+void imp_osd_flip_changed(void)
+{
+#ifdef OSD_ISP
+    if (!g_hcfg) return;
+    OSD_LOCK();
+    osd_stream *s = &g_os[0];
+    if (s->used && s->isp)
+        for (int i = 0; i < MS_MAX_OSD; i++){
+            osd_region *rg = &s->r[i];
+            if (rg->rgn < 0) continue;
+            rg->iw = 0; rg->last[0] = 0; rg->failed[0] = 0;
+            if (rg->is_text) refresh_text(s, rg); else setup_logo(s, rg);
+        }
+    OSD_UNLOCK();
+#endif
+}
+
 void imp_osd_stop(void)
 {
     if (g_started){ ms_stopgate_stop(&g_gate); pthread_join(g_thr,NULL); g_started=0; }
@@ -965,6 +982,7 @@ int  imp_osd_setup(const ms_config *cfg, int s, int w, int h){ (void)cfg;(void)s
 void imp_osd_start_updater(void){}
 void imp_osd_stop(void){}
 void imp_osd_refresh_now(void){}
+void imp_osd_flip_changed(void){}
 #ifdef USE_CONTROL
 void imp_osd_apply(int stream, int item){ (void)stream; (void)item; }
 void imp_osd_privacy_apply(int stream, int item){ (void)stream; (void)item; }

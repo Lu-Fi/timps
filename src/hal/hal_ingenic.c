@@ -5920,6 +5920,7 @@ static void ing_control_commit(void)
         g_isp_flip_kick_pending = 0;
         fs_kick_chn0();
         LOGI(MOD,"ISP flip latch kicked (batched, once per request)");
+        imp_osd_flip_changed();
     }
     /* the encode thread applies it before its next frame */
     for (int s = 0; s < MS_MAX_VSTREAM; s++)

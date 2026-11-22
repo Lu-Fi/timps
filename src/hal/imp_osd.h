@@ -14,6 +14,9 @@ void imp_osd_start_updater(void);
 /* redraw all text regions once, synchronously (a source just became active) */
 void imp_osd_refresh_now(void);
 
+/* image.hflip changed: redraw what the ISP OSD mirrors (T23 direct mode) */
+void imp_osd_flip_changed(void);
+
 /* Tear down all OSD groups and stop the updater. */
 void imp_osd_stop(void);
 
