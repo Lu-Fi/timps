@@ -37,6 +37,12 @@ semantic versioning.
   restart and after an idle period with a new viewer; masks and a live hflip
   not re-tested with the re-send. Known gap: a snapshot that is the very first
   channel-0 frame after a start has only the time and the uptime.
+- `GET /control?stats=1` `system.mem_avail_kb` on kernels without
+  `MemAvailable` (T23 and other 3.10 kernels) now also subtracts `Mapped`
+  (at least `MemFree` remains). The page cache there holds the running
+  programs on squashfs; counting it as free showed ~7 MB on a 32 MB T23
+  that was close to a page-cache thrash. Also used by the recorder's
+  `/tmp` clip memory check, which is now stricter on those kernels.
 
 ### Changed
 

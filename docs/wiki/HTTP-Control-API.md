@@ -359,7 +359,7 @@ arrive pushed. The contract is "what the stats push can't carry", not "encoder".
 ```
 
 `system` (since 1.11.0) is read from `/proc` per request: load average,
-`MemTotal`/`MemAvailable` (pre-3.14 kernels: `MemFree+Buffers+Cached-Shmem`),
+`MemTotal`/`MemAvailable` (pre-3.14 kernels: `MemFree+Buffers+Cached-Shmem-Mapped`, at least `MemFree`),
 the machine's busy % (`cpu_pct`, all cores together) and timpsd's own share of
 the machine on the same scale (`timps_cpu_pct`), plus its resident set. The CPU
 values are whole-percent tick deltas since the previous sample, which is held
