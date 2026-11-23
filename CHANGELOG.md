@@ -32,8 +32,9 @@ semantic versioning.
   monotonically increasing dts", up to ~200 ms on audio under load, ~33 ms
   on the T23 sub-stream video without load). The pairing now uses the
   smallest delay seen in the last 5-10 s. Simulated: 91 of 108 reports
-  moved the mapping by more than 5 ms before, none after. Not yet measured
-  on a camera. OpenIMP T23 binary +108 B.
+  moved the mapping by more than 5 ms before, none after. T23DL with
+  OpenIMP, no load, ffmpeg `-c copy` on both RTSP streams for 10 min: 1 + 20
+  warnings before, 0 + 0 after. OpenIMP T23 binary +108 B.
 
 - T23 in direct mode (`direct_mode=1`, main stream over IVDC): stream 0 had
   no overlays and no privacy masks, because the IVDC frames never sit in
@@ -54,7 +55,9 @@ semantic versioning.
   not re-tested with the re-send. A second re-send 2 s after channel 0
   starts covers the first snapshot after boot, which used to be that first
   frame and had only the time and the uptime (with `fs_keepalive`, channel 0
-  runs from the start without a viewer).
+  runs from the start without a viewer). Tested after a cold boot on the
+  T23DL: a snapshot 4 s after the start had only the time before, and time,
+  hostname, uptime and logo after.
 - `GET /control?stats=1` `system.mem_avail_kb` on kernels without
   `MemAvailable` (T23 and other 3.10 kernels) now also subtracts `Mapped`
   (at least `MemFree` remains). The page cache there holds the running
