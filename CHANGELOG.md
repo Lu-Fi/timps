@@ -25,6 +25,16 @@ semantic versioning.
 
 ### Fixed
 
+- RTSP and WebRTC: the RTCP sender report paired each media timestamp with
+  the packet's publish time, which includes the capture-to-publish delay. A
+  thread that ran late and then published a backlog moved that pairing by
+  the backlog, and ffmpeg re-timed the stream on every report ("non
+  monotonically increasing dts", up to ~200 ms on audio under load, ~33 ms
+  on the T23 sub-stream video without load). The pairing now uses the
+  smallest delay seen in the last 5-10 s. Simulated: 91 of 108 reports
+  moved the mapping by more than 5 ms before, none after. Not yet measured
+  on a camera. OpenIMP T23 binary +108 B.
+
 - T23 in direct mode (`direct_mode=1`, main stream over IVDC): stream 0 had
   no overlays and no privacy masks, because the IVDC frames never sit in
   memory where the normal OSD draws. timps now draws them with the ISP OSD

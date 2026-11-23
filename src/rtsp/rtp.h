@@ -110,6 +110,11 @@ typedef struct {
                                 * SR extrapolates from (see rtcp_wr_sr()).
                                 * 0 = no anchor yet (SRs are gated on
                                 * have_pts0, which implies a send anyway) */
+    /* least-latency filter for the anchor (rtp_sr_anchor) */
+    int64_t    sr_ticks;       /* last_rtp_ts unwrapped to 64 bit */
+    uint32_t   sr_prev_ts;
+    int64_t    sr_off_cur, sr_off_prev, sr_win_us;
+    int        sr_have;
     rtp_out_fn out;
     void      *ctx;
 } rtp_track;
@@ -121,9 +126,29 @@ typedef struct {
  * while pts_us values may live on a different epoch (pts_sanitize output,
  * sim's g_epoch-relative clock), so the SR must never mix them. Call after
  * each successful rtp_send_*(). */
+#define RTP_SR_WIN_US 5000000LL
 static inline void rtp_sr_anchor(rtp_track *t, int64_t mono_us)
 {
-    t->sr_ref_mono_us = mono_us;
+    /* The publish stamp carries the capture-to-publish delay, which jumps
+     * when a starved thread publishes a backlog at once; ffmpeg re-times
+     * the stream on every SR by that jump ("non monotonically increasing
+     * dts"). Pair the timestamp with the smallest delay seen over the last
+     * 5-10 s instead: wall = media time + least (stamp - media time). */
+    if (!t->clock_rate) { t->sr_ref_mono_us = mono_us; return; }
+    if (!t->sr_have) t->sr_prev_ts = t->last_rtp_ts;
+    t->sr_ticks += (int32_t)(t->last_rtp_ts - t->sr_prev_ts);
+    t->sr_prev_ts = t->last_rtp_ts;
+    int64_t media_us = t->sr_ticks * 1000000 / (int64_t)t->clock_rate;
+    int64_t off = mono_us - media_us;
+    if (!t->sr_have) {
+        t->sr_have = 1; t->sr_off_cur = t->sr_off_prev = off;
+        t->sr_win_us = mono_us;
+    } else if (mono_us - t->sr_win_us >= RTP_SR_WIN_US) {
+        t->sr_off_prev = t->sr_off_cur; t->sr_off_cur = off;
+        t->sr_win_us = mono_us;
+    } else if (off < t->sr_off_cur) t->sr_off_cur = off;
+    int64_t best = t->sr_off_cur < t->sr_off_prev ? t->sr_off_cur : t->sr_off_prev;
+    t->sr_ref_mono_us = media_us + best;
 }
 
 /* mtu: max RTP packet size (rtsp.mtu, clamped internally); cname: SDES CNAME
