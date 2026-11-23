@@ -33,6 +33,10 @@ semantic versioning.
   set only then) and still returns 0, so the hostname and the logo, which are
   sent once, were missing. timps re-sends all ISP regions and masks once after
   the first channel-0 frame, and again after each channel-0 re-enable (+12 B).
+  Tested on the T23DL with OpenIMP: time, hostname, uptime and logo after a
+  restart and after an idle period with a new viewer; masks and a live hflip
+  not re-tested with the re-send. Known gap: a snapshot that is the very first
+  channel-0 frame after a start has only the time and the uptime.
 
 ### Changed
 
