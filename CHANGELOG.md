@@ -41,8 +41,10 @@ semantic versioning.
   the first channel-0 frame, and again after each channel-0 re-enable (+12 B).
   Tested on the T23DL with OpenIMP: time, hostname, uptime and logo after a
   restart and after an idle period with a new viewer; masks and a live hflip
-  not re-tested with the re-send. Known gap: a snapshot that is the very first
-  channel-0 frame after a start has only the time and the uptime.
+  not re-tested with the re-send. A second re-send 2 s after channel 0
+  starts covers the first snapshot after boot, which used to be that first
+  frame and had only the time and the uptime (with `fs_keepalive`, channel 0
+  runs from the start without a viewer).
 - `GET /control?stats=1` `system.mem_avail_kb` on kernels without
   `MemAvailable` (T23 and other 3.10 kernels) now also subtracts `Mapped`
   (at least `MemFree` remains). The page cache there holds the running

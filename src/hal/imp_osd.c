@@ -70,6 +70,9 @@ static msttf_font       g_shared; static int g_shared_ok;
 static ms_stopgate      g_gate;   static pthread_t g_thr;
 #ifdef OSD_ISP
 static int g_isp_armed, g_isp_due;   /* re-send after the first chn0 frame */
+/* also 2 s after chn0 starts: with fs_keepalive chn0 runs from boot without
+ * a consumer, so the first snapshot would otherwise be the trigger frame */
+static int64_t g_isp_arm_us;
 static void isp_redraw(int masks);
 #endif
 static int              g_started;   /* P-02: gate replaces the old volatile run flag */
@@ -628,6 +631,7 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
         s->isp = 1;
         LOGI(MOD,"stream 0: T23 direct mode, overlays and privacy masks drawn by the ISP OSD");
         __atomic_store_n(&g_isp_armed, 1, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_isp_arm_us, ms_now_us(), __ATOMIC_RELAXED);
     }
 #endif
 
@@ -764,6 +768,12 @@ static void *osd_thread(void *arg)
         if (__atomic_exchange_n(&g_isp_due, 0, __ATOMIC_RELAXED)){
             isp_redraw(1);
             LOGI(MOD, "stream 0: ISP OSD regions re-sent after the first frame");
+        }
+        int64_t at = __atomic_load_n(&g_isp_arm_us, __ATOMIC_RELAXED);
+        if (at && ms_now_us() - at >= 2000000 &&
+            __atomic_exchange_n(&g_isp_arm_us, 0, __ATOMIC_RELAXED)){
+            isp_redraw(1);
+            LOGI(MOD, "stream 0: ISP OSD regions re-sent 2 s after channel 0 start");
         }
 #endif
         int need = osd_needed();
@@ -951,7 +961,10 @@ void imp_osd_flip_changed(void)
 void imp_osd_isp_rearm(void)
 {
 #ifdef OSD_ISP
-    if (g_os[0].isp) __atomic_store_n(&g_isp_armed, 1, __ATOMIC_RELAXED);
+    if (g_os[0].isp){
+        __atomic_store_n(&g_isp_armed, 1, __ATOMIC_RELAXED);
+        __atomic_store_n(&g_isp_arm_us, ms_now_us(), __ATOMIC_RELAXED);
+    }
 #endif
 }
 
