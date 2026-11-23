@@ -8,6 +8,12 @@ semantic versioning.
 
 ### Added
 
+- `general.client_queue_kb` (default 2048, 128..8192, file-only): the byte
+  budget per client queue, so far the compile-time `FQ_MAX_BYTES`. A client
+  that falls behind keeps at most this much video in RAM. Meant for 32 MB
+  boards (e.g. 384 in the camera profile, Lu-Fi/openimp#800); a weak Wi-Fi
+  client then sees gaps sooner. Default unchanged.
+
 - T21 with OpenIMP: `image.ae_compensation` (0..255, 128 = neutral) through
   `IMP_ISP_Tuning_SetAeComp`, bound weak like `image.dpc_strength`: a vendor
   libimp (1.0.33, no such export) reports the key unsupported, and vendor

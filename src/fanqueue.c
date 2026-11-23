@@ -14,6 +14,12 @@
 #ifndef FQ_MAX_BYTES
 #define FQ_MAX_BYTES (2*1024*1024)
 #endif
+static size_t g_fq_max_bytes = FQ_MAX_BYTES;
+
+void fanqueue_set_max_kb(int kb)
+{
+    if (kb > 0) g_fq_max_bytes = (size_t)kb * 1024;
+}
 
 int fanqueue_init(fanqueue *q, int cap)
 {
@@ -54,7 +60,7 @@ int fanqueue_push(fanqueue *q, ms_pkt *p)
      * count>0 keeps the incoming packet admissible even if it alone exceeds
      * the budget, mirroring the ring's r_count>1 keep-newest rule. */
     while (q->count > 0 &&
-           (q->count == q->cap || q->bytes + p->len > FQ_MAX_BYTES)) {
+           (q->count == q->cap || q->bytes + p->len > g_fq_max_bytes)) {
         ms_pkt *old = q->slots[q->head];
         q->head = (q->head+1)%q->cap;
         q->count--;

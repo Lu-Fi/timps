@@ -270,6 +270,7 @@ void config_defaults(ms_config *c)
     c->debug_modules[0] = 0;
     c->imp_polling_timeout = 500;
     c->osd_pool_size = 1024;   /* max on T-series; holds small OSD regions */
+    c->client_queue_kb = 2048;
     c->fs_keepalive = 1;
 
     /* sensor.* start UNSET so config_sensor_finalize() can auto-detect them
@@ -997,6 +998,8 @@ static const cfg_field general_fields[] = {   /* + general.syslog in set_kv() */
     /* file-only: read once by ing_start, and the edges it avoids are the
      * reason a live toggle would be a bad idea */
     F("fs_keepalive",        0, fs_keepalive,        T_AUTOBOOL, 0, -1,1),
+    /* below ~128 KB one IDR alone overruns it and every GOP breaks */
+    F("client_queue_kb",     0, client_queue_kb,     T_INT, 0, 128,8192),
 };
 static const cfg_field sim_fields[] = {
     FS("video0", 0, sim_video0, 0),

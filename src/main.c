@@ -1,5 +1,6 @@
 /* main.c - timps (Tiny IMP Streamer): minimal-dependency RTSP + fMP4 streamer for Ingenic SoCs */
 #include "config.h"
+#include "fanqueue.h"
 #include "log.h"
 #include "hub.h"
 #include "hal/hal.h"
@@ -637,6 +638,7 @@ int main(int argc, char **argv)
      * -v only ever covered the config parse itself. The command line wins. */
     if (verbose) log_set_level(LOG_DEBUG);
     config_sensor_finalize(&g_cfg);   /* auto-detect sensor from /proc/jz/sensor */
+    fanqueue_set_max_kb(g_cfg.client_queue_kb);
     /* Freeze the boot view of the config BEFORE the HAL/servers (and thus any
      * /control thread) run. Restart-only videoN.* fields (codec/enabled/dims/
      * fps/bitrate/rotation) are read from g_cfg_boot by the streaming consumers

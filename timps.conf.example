@@ -16,6 +16,7 @@ general.syslog              = 1      # 1 = also log to syslog so messages show u
                                      #     0 = stderr only (foreground / host sim)
 general.imp_polling_timeout = 500    # ms, encoder poll timeout
 general.osd_pool_size       = 1024   # KB, IMP OSD pool (this is the default)
+#general.client_queue_kb    = 2048   # KB kept per client that falls behind; 32 MB boards: 384
 # FrameSource keepalive: 1 on (the default since v1.12.0: FrameSources run
 # from start to stop, encoders stay on-demand; idle CPU/heat cost unmeasured,
 # ~6.3 MB rmem for a 1080p main stream stays allocated), 0 off (FrameSources

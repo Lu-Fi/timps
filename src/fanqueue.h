@@ -7,6 +7,9 @@
 #include "frame.h"
 #include <pthread.h>
 
+/* general.client_queue_kb: byte budget per queue, set once at start */
+void fanqueue_set_max_kb(int kb);
+
 /* named struct so util.h can forward-declare it (ms_client_reg) without
  * dragging the whole packet/queue layer into the bottom-most header */
 typedef struct fanqueue {
