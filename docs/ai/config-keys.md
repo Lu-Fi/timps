@@ -1736,13 +1736,10 @@ Implications the upstream `Makefile` applies no matter what the package passes:
 
 * Config path is hardcoded: `CONF=/etc/timps.conf`, passed as
   `timpsd -c /etc/timps.conf`. PID file `/var/run/timpsd.pid`.
-* **Since v1.10.0** `start` runs `timpsd --check-libs` first and
-  does not start the daemon on exit 78/79 (libimp does not fit the build;
-  each output line and a `timpsd not started (exit N)` line logged with
-  `logger -t timps -p daemon.err`, returns 1). Any other result (80 = could
-  not check, logged at `daemon.warn`) starts as before. A `timpsd` whose
-  binary does not contain the string `--check-libs` is not asked at all
-  (before v1.9.30 an unknown option started the daemon in the foreground).
+* `start` starts `timpsd` directly. Images from v1.10.0 until 2026-11-21
+  ran `timpsd --check-libs` first and did not start the daemon on exit 78/79
+  (logged under tag `timps` at `daemon.err`); current images leave that to
+  the daemon, which exits 78/79 itself with the `LIBIMP` lines.
 * Commands: **`start | stop | restart | status`**. There is **no `reload`** —
   live reconfiguration is `/control`'s job, and anything restart-required needs
   a full `S95timps restart`.

@@ -73,7 +73,7 @@ a row.
 | `DAYNIGHT` | `daynight.c` | — | — | — | — | **since v1.10.1** (the counts are of the earlier engine): every look, `look (<why>): lit … dark … bar … -> check\|night`; since v1.11.0 `why` can be `color`, and `-> locked (N s)` when a lockout after failed checks holds the check back, with `colour moved N %` / `colour back to the scene before the look`; since v1.12.0 `look (<why>) skipped: lit … bar …` and `why` `near` |
 | `HAL_ING` | `hal/hal_ingenic.c` | 44 | 77 | 48 | 10 | encoder/framesource internals, polling and teardown detail, the sensor-fps requested-vs-held readback (`sensor fps: requested N, driver holds n/d, set rc=R`) |
 | `CTRL` | `control.c` | 0 | 4 | 3 | 5 | request/field handling on `/control` |
-| `OSD` | `hal/imp_osd.c` | 4 | 8 | 6 | 3 | overlay placement and region updates |
+| `OSD` | `hal/imp_osd.c` | 4 | 10 | 9 | 3 | overlay placement and region updates; on T23 in direct mode (since the next release) the ISP OSD lines: `stream 0: T23 direct mode, overlays and privacy masks drawn by the ISP OSD`, the two re-sends, and `ISP OSD item … not shown` / `ISP mask … not applied` |
 | `RTSP` | `rtsp/rtsp.c` | 4 | 8 | 5 | 1 | per-drop queue-overflow detail, dropped P-frames, IDR re-requests (the *first* keyframe drop of a session is a WARN) |
 | `HTTP` | `mp4/httpd.c` | 3 | 13 | 10 | 5 | same for the fMP4/MJPEG side, including adaptive freeze (first keyframe drop per client is a WARN) |
 | `HUB` | `hub.c` | 0 | 1 | 0 | 2 | fan-out subscribe/unsubscribe at debug, plus the one always-on line: a per-(consumer kind, stream) queue-overflow summary, at most once per 60 s — the counter behind it is `/control` `queue_drops` |

@@ -1534,6 +1534,10 @@ There is also a QA harness in the repo:
 - **Rotation and overlays:** older text claimed hardware OSD/privacy fail on a
   rotated T31 stream; that was fixed 2026-07-23. The limit is the top band
   (`video.<N>.rotate_path` = `band`), see the rotation problems above.
+- **T23 in direct mode** (`tx-isp-t23` `direct_mode=1`): up to v1.13.0 stream 0
+  has no overlays and no privacy masks. **Since the next release** timps draws
+  them with the ISP OSD and the ISP mask blocks (max 8 + 4, masks opaque);
+  tested on a T23DL with OpenIMP, not with the vendor libimp.
 - When unsure whether a feature exists on a user's camera, say so and ask for
   `GET /control` output rather than guessing. The `caps` object is designed
   exactly for that question.

@@ -928,6 +928,7 @@ privacy regions, `MS_MAX_STR` = 64 bytes per string field.
 | `osd updater thread create failed - overlays will not update` | Static OSD only from here on. |
 | `osd item N: no region on stream M (disabled at startup) - enable persisted, applies on restart` | An OSD **item** disabled at boot has no region, so enabling it live cannot work. Restart. |
 | `privacy N: no region on stream M (OSD+privacy off at startup) - persisted, applies on restart` | **Not** the same rule — see below. |
+| `stream 0: T23 direct mode, overlays and privacy masks drawn by the ISP OSD` | **Since the next release**, T23 with `direct_mode=1`: stream 0 uses the ISP OSD instead of `IMP_OSD` (§12.9). Masks are opaque there (the alpha byte of `color` is ignored). On v1.13.0 and older, stream 0 shows no overlays and no masks in direct mode: upgrade. |
 
 **The two are different, and conflating them sends users on a needless
 restart.** `imp_osd_setup()` creates a region for each OSD item **only if that
@@ -1373,6 +1374,14 @@ Shared facts:
 | `503 Service Unavailable` on PLAY | `hub_subscribe()` failed: the source is at `HUB_MAX_SUBS` = 16. Log: `subscribe failed (source full), closing session=…` | Close other viewers. |
 | Raw `RTSP/1.0 503 Service Unavailable` with **no CSeq**, socket closed immediately | `RTSP_MAX_CLIENTS` = **8** concurrent clients reached. Log (at most once a minute): `client limit (8) reached, rejecting <ip> (<n> more suppressed)`; with `, oldest unauthenticated connection dropped` a connection that had not authenticated for over 1 s was closed to make room, and a retry gets in. Or, once more than half the slots are taken, this peer already holds `RTSP_PREAUTH_PER_PEER` = **3** unauthenticated connections older than 1 s: `too many unauthenticated connections from <ip>, rejecting`. | Close viewers, or rebuild with `-DRTSP_MAX_CLIENTS=N`. |
 | `551 Option not supported` | A `Require:` tag other than `backchannel`. | Client bug. |
+
+> **ffmpeg/Frigate `non monotonically increasing dts`** on an RTSP input
+> (mostly on the video track, a few ms each): up to v1.13.0 the RTCP sender
+> report paired the media time with the packet's publish time, so a late
+> publish thread moved the mapping, and ffmpeg re-times the stream on every
+> SR. **Since the next release** the SR uses the least-delayed packet of a
+> 5-10 s window (measured on a T23DL without load: 1 + 20 warnings → 0 + 0).
+> Many warnings while the camera is overloaded are a load problem (§2.3).
 
 > **At the RTSP client limit the server answers a bare
 > `RTSP/1.0 503 Service Unavailable`** and closes the socket. Some older
@@ -2633,18 +2642,19 @@ mbedTLS.
   the **new** process (`another timpsd instance already holds …`, exit 1),
   leaving the camera dark. On such an image, stop, wait, and start as two
   separate commands, or reboot.
-- **Since v1.10.0** `start` first runs `timpsd --check-libs` and
-  does not start a daemon whose libimp does not fit (exit 78/79, logged under
-  tag `timps` at `daemon.err`) — §1.11.
+- Images from v1.10.0 until 2026-11-21 ran `timpsd --check-libs` before
+  the start; current images start `timpsd` directly, and a daemon whose libimp
+  does not fit exits 78/79 itself — §1.11.
 - `/etc/timps.conf` is installed at **build time**; there is no
   `timps.conf.example` and no first-boot seeding, despite what
   `package/timps/README.md` still says.
 
 ### 11.7 Upgrade targets — "upgrade to ≥ vX"
 
-Latest release in `CHANGELOG.md` is **1.9.28 (2026-09-28)**. Anything this
-file marks "since v1.9.28" first shipped in that release, so **1.9.28** is the
-upgrade target for it. Two caveats before
+Latest release in `CHANGELOG.md` is **1.13.0 (2026-11-21)**. The table
+below stops at 1.9.28; for a fix after that, the "since vX" mark in this
+file or the `CHANGELOG.md` heading the entry sits under is the upgrade target,
+and "since the next release" means not released yet. Two caveats before
 quoting a released version at a user:
 
 - `CHANGELOG.md` **jumps from `[1.2.0]` to `[1.5.0]`**. The 1.3.x/1.4.x fixes
@@ -2934,6 +2944,10 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `osd updater thread create failed - overlays will not update` | E | Static OSD only from now on. | Restart. |
 | `osd item %d: no region on stream %d (disabled at startup) - enable persisted, applies on restart` | W | **An item disabled at boot has no region, so it cannot be enabled live.** | Restart. §2.7 |
 | `privacy %d: no region on stream %d (OSD+privacy off at startup) - persisted, applies on restart` | W | **Not** the OSD-item rule. All four privacy regions are pre-created (hidden when disabled) whenever the stream has an OSD group, so masks are normally live. This fires only when the stream has **no group at all** — `osd.enabled = 0` *and* no privacy region enabled at boot — or when `CreateRgn` failed. | Enable OSD or one privacy region in the file and restart **once**; after that every mask is live. §2.7 |
+| `stream 0: T23 direct mode, overlays and privacy masks drawn by the ISP OSD` | I | **Since the next release.** T23 with `tx-isp-t23` `direct_mode=1`: stream 0's frames never sit in memory, so its overlays go to the ISP OSD and its masks to the ISP mask blocks (max 8 + 4; masks opaque). Not on a rotated stream 0. | None. Up to v1.13.0 stream 0 had no overlays or masks in direct mode. |
+| `stream 0: ISP OSD regions re-sent after the first frame` / `stream 0: ISP OSD regions re-sent 2 s after channel 0 start` | I | **Since the next release.** The driver takes OSD blocks only after channel 0 has streamed, so after a cold boot the first send can be dropped; timps sends all regions again at the first frame and once more 2 s after channel 0 starts. One of each per start is normal. | None. |
+| `ISP OSD item %d (%dx%d at %d,%d) not shown` | W | **Since the next release**, T23 direct mode: the ISP refused this overlay (`SetOsdRgnAttr`/`ShowOsdRgn`/`UpdateRgnAttrData_ISP` failed). Size and position are in the line. | Move or shrink the item; if every item fails right after boot, check for the re-send lines above. |
+| `ISP mask %d on stream 0 not applied` | W | **Since the next release**, T23 direct mode: `IMP_ISP_Tuning_SetMaskBlock` failed for privacy region %d. | Check the region lies inside the frame; up to 4 masks. |
 
 ### 12.10 `MOTION` (`src/hal/imp_motion.c`)
 
