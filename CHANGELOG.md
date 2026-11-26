@@ -8,6 +8,11 @@ semantic versioning.
 
 ### Added
 
+- Audio input: a warning `audio in: N capture gap(s), M ms lost in the last 60s
+  (reader too slow)` when captured frames are more than 60 ms apart, i.e. the
+  AI ring overran under load. Before, such gaps were audible but not logged.
+  T23 OpenIMP binary +512 B code.
+
 - `general.client_queue_kb` (default 2048, 128..8192, file-only): the byte
   budget per client queue, so far the compile-time `FQ_MAX_BYTES`. A client
   that falls behind keeps at most this much video in RAM. Meant for 32 MB

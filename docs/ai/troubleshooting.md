@@ -2914,6 +2914,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `audio input unavailable` | E | No mic pipeline this run. | §6.1 |
 | `IMP_AI_Enable failed` / `IMP_AI_SetChnParam failed` / `IMP_AI_EnableChn failed` | E | AI bring-up failed. | §6.1 |
 | `no audio frames received - disabling audio input` | E | The AI reported success but never delivered. Audio is no longer advertised. | §6.1 |
+| `audio in: %u capture gap(s), %lld ms lost in the last 60s (reader too slow)` | W | **Since the next release.** Two captured audio frames (40 ms each) were more than 60 ms apart: the AI ring (`MS_AI_FRM_NUM` 6 frames, 240 ms) overran because the audio thread read too late, usually CPU load. Clients hear a gap; A/V sync holds (`audio_gap_resync`). At most one line per 60 s. | Reduce load (fewer streams/clients, lower bitrate). Occasional single gaps are harmless. |
 | `audio.alc_gain unsupported on this platform (ignored)` | W | `IMP_AI_SetAlcGain` exists on T21/T31/C100 only. | §6.7 |
 | `no AAC encoder (build with USE_FAAC) -> using PCMU (G.711u)` | W | No AAC in this build. | §6.2 |
 | `faac_encoder_open failed (%s) -> PCMU` | W | The AAC encoder would not open. | §6.2 |

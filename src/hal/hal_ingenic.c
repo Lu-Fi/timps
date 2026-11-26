@@ -5065,6 +5065,8 @@ static void *audio_thread(void *arg)
 
     int ai_fail_streak = 0;
     int64_t ai_fail_t0 = 0;     /* first miss of the current streak */
+    int64_t ai_last_ts = 0, ai_gap_us = 0, ai_gap_t0 = ms_now_us();
+    unsigned ai_gaps = 0;
     /* A1: capture-pts sanitizer for audio (own instance, never shared with a
      * video channel). Feeds the AI hardware timeStamp through pts_sanitize() so
      * a publish-thread stall (audio starved by the video encoders, then the AI
@@ -5115,6 +5117,7 @@ static void *audio_thread(void *arg)
                 drained++;
             }
             memset(&apts, 0, sizeof apts);   /* fresh capture-pts anchor */
+            ai_last_ts = 0;
             memset(&apts2, 0, sizeof apts2);
             memset(&a2_z, 0, sizeof a2_z);
             a1_idle = 1; a2_idle = 1;
@@ -5174,6 +5177,19 @@ static void *audio_thread(void *arg)
             usleep(10000); continue;
         }
         ai_fail_streak = 0;
+        /* frames are 40 ms; a longer capture step means the AI ring overran
+         * because this thread read too late */
+        if (frm.timeStamp > 0){
+            int64_t d = (int64_t)frm.timeStamp - ai_last_ts;
+            if (ai_last_ts > 0 && d > 60000){ ai_gaps++; ai_gap_us += d - 40000; }
+            ai_last_ts = (int64_t)frm.timeStamp;
+        }
+        if (ms_now_us() - ai_gap_t0 >= 60000000){
+            if (ai_gaps)
+                LOGW(MOD, "audio in: %u capture gap(s), %lld ms lost in the last 60s (reader too slow)",
+                     ai_gaps, (long long)(ai_gap_us / 1000));
+            ai_gaps = 0; ai_gap_us = 0; ai_gap_t0 = ms_now_us();
+        }
         /* live mic mute (audio.mute via /control): keep draining the AI so
          * nothing backs up, but never feed the encoder/hub - RTSP and MP4
          * clients simply receive no audio frames until unmuted */
