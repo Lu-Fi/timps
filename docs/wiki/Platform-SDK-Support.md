@@ -1,8 +1,8 @@
 # Platform & SDK Support
 
 timps supports nine Ingenic SoC families: **T10, T20, T21, T23, T30, T31,
-T40, T41, C100**. **Unreleased:** T32 and T33 build against OpenIMP
-(experimental, see below). This page summarizes the cross-platform structure the
+T40, T41, C100**, plus **T32 and T33** (experimental, OpenIMP only,
+**since v1.13.0**, see below): eleven `PLATFORM` values in all. This page summarizes the cross-platform structure the
 codebase is built around; it deliberately does not duplicate the
 exhaustive per-function availability matrix already maintained in
 `docs/sdk-feature-gaps.md`, or the rotation deep-dive in
@@ -28,8 +28,8 @@ git submodule under `include/`) are pinned per platform in the
 | T40 | `include/T40/1.3.1/en` (matches the libimp 1.3.1 thingino ships; the older 1.2.0 header lacks `IMPEncoderStream.isVI`, so `IMP_Encoder_GetStream` would overrun a struct one word too short — `video_thread()` has a compile-time tripwire against this) |
 | T41 | `include/T41/1.2.6/en` (matches the libimp 1.2.6 thingino ships) |
 | T20, T10 | `include/T20/3.12.0/zh` (T10 has no distinct header set and builds against T20's) |
-| T32 | `include/T32/2.2.0/en` (**unreleased**, the API line the OpenIMP T32 libimp follows) |
-| T33 | `include/T33/2.0.2.1/en` (**unreleased**, the API line the OpenIMP T33 libimp follows) |
+| T32 | `include/T32/2.2.0/en` (**since v1.13.0**, experimental; the API line the OpenIMP T32 libimp follows) |
+| T33 | `include/T33/2.0.2.1/en` (**since v1.13.0**, experimental; the API line the OpenIMP T33 libimp follows) |
 
 ## Two encoder-API generations
 
@@ -39,7 +39,7 @@ generations:
 - **New generation** — `IMP_Encoder_SetDefaultParam`-based configuration:
   **T31, C100, T40, T41**.
 - **Old generation** — manual `IMPEncoderChnAttr`/profile/rate-control
-  struct assembly: **T10, T20, T21, T23, T30**, and **T32/T33** (**unreleased**:
+  struct assembly: **T10, T20, T21, T23, T30**, and **T32/T33** (**since v1.13.0**, experimental:
   its own rate-control structs, and the T41 form of the ISP sensor/tuning
   API).
 

@@ -211,7 +211,8 @@ Yes, on every `POST /control` that changed at least one key — but it is a
 ### 1.6 Platform names
 
 `PLATFORM` values the `Makefile` has a branch for: **T10, T20, T21, T23,
-T30, T31, T40, T41, C100**. There is **no validation**: the `IMP_INC` selection
+T30, T31, T32, T33, T40, T41, C100** (T32/T33 experimental, OpenIMP only,
+since v1.13.0). There is **no validation**: the `IMP_INC` selection
 ends in an `else` branch that falls back to the **T31** headers, so an unknown
 or misspelled `PLATFORM` builds silently against T31 headers while
 `-DPLATFORM_<X>` matches no `*_caps.h` condition. `T32`, `T33` and `A1` are **not** selectable

@@ -806,7 +806,8 @@ the WebSocket variant (instead of CGI polling) is enabled.
 
 ## Platform support
 
-* **SoCs**: T10, T20, T21, T23, T30, T31, T40, T41, C100.
+* **SoCs**: T10, T20, T21, T23, T30, T31, T40, T41, C100; T32 and T33
+  experimental (OpenIMP only, since v1.13.0).
 * **Two encoder API generations**: new (`IMP_Encoder_SetDefaultParam`) on
   T31/C100/T40/T41, classic (manual `IMPEncoderChnAttr` structure) on
   T10/T20/T21/T23/T30. This explains the different meaning of
@@ -943,7 +944,7 @@ Say so plainly when one of these matches the user's need. Each point is
 backed by this file, the other `docs/ai/` files or the source.
 
 * **SoC not in the list.** timps builds for T10, T20, T21, T23, T30, T31, T40,
-  T41 and C100 only (`Makefile` `PLATFORM`; the thingino package excludes
+  T41 and C100, and experimentally for T32/T33 with OpenIMP, only (`Makefile` `PLATFORM`; the thingino package excludes
   A1). For any other SoC use a streamer that supports it (prudynt-t, raptor;
   check their own documentation).
 * **Browser viewing from outside the LAN.** WebRTC is LAN/VPN only: one host
@@ -1006,9 +1007,9 @@ in caller mode: `srt.mode = caller` plus `srt.host`, in a build with
 then `/etc/init.d/S95timps restart`.
 
 **Q: Does timps run on my T32 or T33 camera?**
-A: Not in a release. Released builds cover T10, T20, T21, T23, T30, T31, T40,
-T41 and C100. **Unreleased:** T32 and T33 builds with OpenIMP compile (T32
-2.2.0 / T33 2.0.2.1 headers). A first T33L test streamed main and sub,
+A: Experimentally, with OpenIMP only, **since v1.13.0** (T32 2.2.0 / T33
+2.0.2.1 headers); the stable list is T10, T20, T21, T23, T30, T31, T40, T41
+and C100. A first T33L test streamed main and sub,
 took snapshots and answered `/control`; T32 has not run on a camera.
 `image.max_again` and the day/night reading go through `AeExprInfo`, which
 needs OpenIMP support (Lu-Fi/openimp#527); `jpeg.quality` maps linearly to

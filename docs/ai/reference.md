@@ -90,7 +90,8 @@ feature presence and the config/API differences above.
 
 ### Supported SoCs
 
-**T10, T20, T21, T23, T30, T31, T40, T41, C100.**
+**T10, T20, T21, T23, T30, T31, T40, T41, C100**, plus **T32 and T33**
+(experimental, OpenIMP only, since v1.13.0).
 
 The Buildroot package has one hard exclusion: `depends on !BR2_SOC_FAMILY =
 "a1"` (no Ingenic A1). Everything else is a capability difference, not an
@@ -184,7 +185,8 @@ make PLATFORM=T31 CROSS_COMPILE=mipsel-linux-
 make strip PLATFORM=T31 CROSS_COMPILE=mipsel-linux-
 ```
 
-`PLATFORM ∈ {T10 T20 T21 T23 T30 T31 T40 T41 C100}`. Link-time optimisation
+`PLATFORM ∈ {T10 T20 T21 T23 T30 T31 T32 T33 T40 T41 C100}` (T32/T33
+experimental, OpenIMP only). Link-time optimisation
 is on by default (`USE_LTO=1`, `-flto=auto`, needs GCC 10+, since v1.10.1);
 `USE_LTO=0` builds per file. IMP headers come from the
 `gtxaspec/ingenic-headers` git submodule under `include/` — a clone without

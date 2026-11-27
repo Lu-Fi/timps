@@ -61,7 +61,7 @@ is the place to start.
 
 ## Supported platforms
 
-T10 · T20 · T21 · T23 · T30 · T31 · T40 · T41 · C100 (Ingenic SoC families).
+T10 · T20 · T21 · T23 · T30 · T31 · T40 · T41 · C100 (Ingenic SoC families), plus T32 · T33 (experimental, OpenIMP only, since v1.13.0).
 See [Platform & SDK Support](Platform-SDK-Support.md) for the capability
 matrix (two encoder-API generations, per-SoC rotation tiers, ISP tuning
 availability) and links to the deeper `docs/sdk-feature-gaps.md` and

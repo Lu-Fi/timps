@@ -68,7 +68,7 @@ exhaustive config-key reference (`config-keys.md`).
 - **libimp check** — a `timpsd` built for the other libimp stack (vendor vs OpenIMP) exits 78/79 with a reason instead of crashing; `timpsd --check-libs` runs only that check
 - **Tiny footprint** — small enough for a T10
 
-**Supported SoCs:** T10 · T20 · T21 · T23 · T30 · T31 · T40 · T41 · C100
+**Supported SoCs:** T10 · T20 · T21 · T23 · T30 · T31 · T40 · T41 · C100; experimental with OpenIMP only (since v1.13.0): T32 · T33
 
 ## Streams & endpoints
 
@@ -147,7 +147,7 @@ make PLATFORM=T31 CROSS_COMPILE=mipsel-linux-
 make strip PLATFORM=T31 CROSS_COMPILE=mipsel-linux-
 ```
 
-`PLATFORM` ∈ `T10 T20 T21 T23 T30 T31 T40 T41 C100`. Result: a single `timpsd`
+`PLATFORM` ∈ `T10 T20 T21 T23 T30 T31 T32 T33 T40 T41 C100` (T32/T33 experimental, OpenIMP only). Result: a single `timpsd`
 binary. Vendor libs are linked via `IMPLIBS` (default static
 `-l:libimp.a -l:libalog.a -l:libsysutils.a`; add `libmuslshim` /
 `libaudioProcess` to match your SDK). See [Building](docs/wiki/Building.md)

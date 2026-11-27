@@ -41,7 +41,7 @@ make PLATFORM=T31 CROSS_COMPILE=mipsel-linux-
 make strip PLATFORM=T31 CROSS_COMPILE=mipsel-linux-
 ```
 
-- `PLATFORM` selects one of `T10 T20 T21 T23 T30 T31 T40 T41 C100`.
+- `PLATFORM` selects one of `T10 T20 T21 T23 T30 T31 T32 T33 T40 T41 C100` (T32/T33 experimental, OpenIMP only).
 - `CROSS_COMPILE` is the toolchain prefix (default `mipsel-linux-`).
 - `IMP_INC` points at the vendored Ingenic IMP SDK headers; it defaults to
   a version pinned per platform under `./include/<SoC>/<version>/<lang>`
